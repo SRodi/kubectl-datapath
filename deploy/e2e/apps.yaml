@@ -22,7 +22,7 @@ spec:
         datapath.e2e/role: source
       containers:
         - name: frontend
-          image: busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+          image: registry.k8s.io/e2e-test-images/busybox:1.36.1-1@sha256:a9155b13325b2abef48e71de77bb8ac015412a566829f621d06bfae5c699b1b9
           command: ["sleep", "infinity"]
 ---
 apiVersion: apps/v1
@@ -44,7 +44,7 @@ spec:
         datapath.e2e/role: destination
       containers:
         - name: backend
-          image: nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de
+          image: registry.k8s.io/nginx-slim:0.27@sha256:ce45bf76c527594f60b5885555dcc6372b5bc8f3539b36314c22e4e079d88cff
           ports:
             - containerPort: 80
 ---
