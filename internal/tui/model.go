@@ -176,11 +176,18 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					return m, waitForStream(m.observations, m.errors)
 				}
+				attempts := m.trace.Attempts()
 				traceKey := traceConnectionKey(message.observation, *m.traceContext)
+				if traceKey == "" && m.traceContext.Mode == model.TraceModeService {
+					traceKey = activeAttemptPacketKey(
+						message.observation,
+						*m.traceContext,
+						attempts,
+					)
+				}
 				if traceKey != "" {
 					m.tracePackets[traceKey] = append(m.tracePackets[traceKey], message.observation)
 					if m.traceContext.Mode == model.TraceModeService {
-						attempts := m.trace.Attempts()
 						if len(attempts) > 0 {
 							active := attempts[0]
 							activeKey := attemptDisplayKey(
@@ -619,10 +626,45 @@ func traceConnectionKey(observation model.Observation, context model.TraceContex
 		)
 	}
 	if sourceEndpoint(observation.DstEndpoint, observation.DstAddr, context.Source) &&
-		observation.Protocol == 6 && observation.TCPFlags&0x10 != 0 && observation.TCPAck != 0 {
+		observation.Protocol == 6 && observation.TCPAck != 0 &&
+		(observation.TCPFlags&0x12 == 0x12 || observation.TCPFlags&0x04 != 0) {
 		return attemptDisplayKey(
 			observation.Protocol, observation.DstAddr, observation.DstPort, observation.TCPAck-1,
 		)
+	}
+	return ""
+}
+
+func activeAttemptPacketKey(
+	observation model.Observation,
+	context model.TraceContext,
+	attempts []traceview.AttemptSummary,
+) string {
+	if observation.Protocol != 6 {
+		return ""
+	}
+	var sourceAddress netip.Addr
+	var sourcePort uint16
+	switch {
+	case sourceEndpoint(observation.SrcEndpoint, observation.SrcAddr, context.Source):
+		sourceAddress = observation.SrcAddr
+		sourcePort = observation.SrcPort
+	case sourceEndpoint(observation.DstEndpoint, observation.DstAddr, context.Source):
+		sourceAddress = observation.DstAddr
+		sourcePort = observation.DstPort
+	default:
+		return ""
+	}
+	for _, attempt := range attempts {
+		if attempt.Active && attempt.Protocol == observation.Protocol &&
+			attempt.SourceAddr == sourceAddress && attempt.SourcePort == sourcePort {
+			return attemptDisplayKey(
+				attempt.Protocol,
+				attempt.SourceAddr,
+				attempt.SourcePort,
+				attempt.InitialSequence,
+			)
+		}
 	}
 	return ""
 }

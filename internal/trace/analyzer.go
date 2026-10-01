@@ -537,7 +537,10 @@ func (a *Analyzer) Datapath() *DatapathView {
 		}
 		view.SourceBoundary = evidencePoint(healthByName["source/boundary"])
 		view.DestinationBoundary = evidencePoint(healthByName["backend/boundary"])
-		if !a.backendInstrumented(view.Destination) {
+		if a.backendUnavailable(
+			view.DestinationBoundary.State == "OBSERVED",
+			view.Destination,
+		) {
 			view.DestinationBoundary = EvidencePoint{
 				State:  "UNAVAILABLE",
 				Detail: "selected backend was not instrumented because it exceeds --max-backends",
@@ -576,6 +579,11 @@ func (a *Analyzer) Datapath() *DatapathView {
 	view.Policies = a.diagramPolicies(view.Destination)
 	view.Diagnosis = diagnoseDatapath(*view, a.mode(), dnsFocus != nil)
 	return view
+}
+
+func (a *Analyzer) backendUnavailable(observed bool, destination model.Endpoint) bool {
+	// Direct packet evidence proves coverage even if the topology snapshot is stale or incomplete.
+	return !observed && !a.backendInstrumented(destination)
 }
 
 func (a *Analyzer) backendInstrumented(destination model.Endpoint) bool {
@@ -979,7 +987,7 @@ func (a *Analyzer) Health() []Health {
 	backendHealth := a.healthWithLoss("backend/boundary", backendBoundary, backend, "matching initial SYN", "backend")
 	if a.active != nil && len(a.active.sourceSYNs) > 0 {
 		destination := endpointFor(a.active.sourceSYNs[0], a.context)
-		if !a.backendInstrumented(destination) {
+		if a.backendUnavailable(backendBoundary, destination) {
 			backendHealth = Health{
 				Name: "backend/boundary", State: "UNAVAILABLE",
 				Detail: "selected backend was not instrumented because it exceeds --max-backends",

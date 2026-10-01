@@ -599,6 +599,51 @@ func TestAnalyzerMarksUninstrumentedBackendUnavailable(t *testing.T) {
 	t.Fatal("backend health missing")
 }
 
+func TestAnalyzerPrefersObservedBackendOverCoverageMetadata(t *testing.T) {
+	analyzer := NewAnalyzer()
+	context := testContext()
+	context.Mode = model.TraceModeService
+	context.BackendCoverageKnown = true
+	context.InstrumentedBackends = nil
+	now := time.Now()
+
+	analyzer.Observe(model.Observation{Kind: model.KindTraceContext, Trace: &context})
+	analyzer.Observe(model.Observation{
+		Kind: model.KindStatus, Side: "backend", AttachmentID: "backend-1",
+		Interface: "veth-backend", InterfaceIdx: 10,
+	})
+	analyzer.Observe(model.Observation{
+		Kind: model.KindPacket, Side: "source", WallTime: now,
+		Protocol: 6, SrcAddr: context.Source.Address, DstAddr: context.Frontends[0].Address,
+		SrcPort: 40000, DstPort: context.Frontends[0].Port,
+		TCPFlags: 0x02, TCPSequence: 100,
+	})
+	analyzer.Observe(model.Observation{
+		Kind: model.KindPacket, Side: "backend", WallTime: now.Add(time.Millisecond),
+		Protocol: 6, SrcAddr: context.Source.Address, DstAddr: context.Backends[0].Address,
+		SrcPort: 40000, DstPort: context.Backends[0].Port,
+		TCPFlags: 0x02, TCPSequence: 100,
+	})
+
+	backendObserved := false
+	for _, current := range analyzer.Health() {
+		if current.Name == "backend/boundary" {
+			backendObserved = true
+			if current.State != "OBSERVED" {
+				t.Fatalf("backend health = %#v", current)
+			}
+		}
+	}
+	if !backendObserved {
+		t.Fatal("backend health missing")
+	}
+	datapath := analyzer.Datapath()
+	if datapath == nil || datapath.DestinationBoundary.State != "OBSERVED" ||
+		!strings.Contains(datapath.Diagnosis, "observed through the destination Pod boundary") {
+		t.Fatalf("datapath = %#v", datapath)
+	}
+}
+
 func testContext() model.TraceContext {
 	dnsService := model.Endpoint{
 		Kind: model.EndpointService, Namespace: "kube-system", Name: "kube-dns",

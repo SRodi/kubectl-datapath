@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/SRodi/kubectl-datapath/internal/model"
+	traceview "github.com/SRodi/kubectl-datapath/internal/trace"
 )
 
 func TestViewShowsHonestStatus(t *testing.T) {
@@ -80,6 +81,37 @@ func TestTraceConnectionKeySeparatesReusedClientPorts(t *testing.T) {
 	}
 	if responseKey := traceConnectionKey(response, context); responseKey != secondKey {
 		t.Fatalf("response key = %q, want %q", responseKey, secondKey)
+	}
+}
+
+func TestActiveAttemptPacketKeyIncludesEstablishedTraffic(t *testing.T) {
+	source := netip.MustParseAddr("10.0.0.10")
+	backend := netip.MustParseAddr("10.0.1.20")
+	context := model.TraceContext{
+		Mode: model.TraceModeService,
+		Source: model.Endpoint{
+			Kind: model.EndpointPod, Namespace: "demo", Name: "frontend", Address: source,
+		},
+		Backends: []model.Endpoint{{
+			Kind: model.EndpointPod, Namespace: "demo", Name: "backend", Address: backend,
+		}},
+	}
+	attempts := []traceview.AttemptSummary{{
+		Protocol: 6, SourceAddr: source, SourcePort: 40000, InitialSequence: 100, Active: true,
+	}}
+	request := model.Observation{
+		Protocol: 6, SrcAddr: source, DstAddr: backend, SrcPort: 40000, DstPort: 80,
+		TCPFlags: 0x18, TCPSequence: 101, TCPAck: 500,
+	}
+	response := model.Observation{
+		Protocol: 6, SrcAddr: backend, DstAddr: source, SrcPort: 80, DstPort: 40000,
+		TCPFlags: 0x18, TCPSequence: 500, TCPAck: 140,
+	}
+	expected := attemptDisplayKey(6, source, 40000, 100)
+	for _, observation := range []model.Observation{request, response} {
+		if key := activeAttemptPacketKey(observation, context, attempts); key != expected {
+			t.Fatalf("established packet key = %q, want %q", key, expected)
+		}
 	}
 }
 
@@ -189,6 +221,88 @@ func TestDatapathVisualizationMarksMissingBackendEvidence(t *testing.T) {
 		if !strings.Contains(view, expected) {
 			t.Fatalf("%q missing from datapath view:\n%s", expected, view)
 		}
+	}
+}
+
+func TestDatapathVisualizationShowsObservedBackendDespiteCoverageMetadata(t *testing.T) {
+	observations := make(chan model.Observation)
+	errors := make(chan error)
+	m := New("trace", observations, errors)
+	context := model.TraceContext{
+		Mode: model.TraceModeService,
+		Source: model.Endpoint{
+			Kind: model.EndpointPod, Namespace: "default", Name: "frontend",
+			Node: "worker-a", Address: netip.MustParseAddr("10.0.1.5"),
+		},
+		Service: &model.Endpoint{
+			Kind: model.EndpointService, Namespace: "default", Name: "backend",
+		},
+		Frontends: []model.Endpoint{{
+			Kind: model.EndpointService, Namespace: "default", Name: "backend",
+			Address: netip.MustParseAddr("10.0.130.86"), Port: 80,
+		}},
+		Backends: []model.Endpoint{{
+			Kind: model.EndpointPod, Namespace: "default", Name: "backend-abc",
+			Node: "worker-b", Address: netip.MustParseAddr("10.0.2.8"), Port: 80,
+		}},
+		BackendCoverageKnown: true,
+	}
+	now := time.Now()
+	events := []model.Observation{
+		{Kind: model.KindTraceContext, Trace: &context},
+		{Kind: model.KindStatus, Side: "source", AttachmentID: "source", Node: "worker-a", Interface: "veth-source"},
+		{Kind: model.KindStatus, Side: "backend", AttachmentID: "backend-1", Node: "worker-b", Interface: "veth-backend"},
+		{
+			Kind: model.KindPacket, Side: "source", WallTime: now,
+			Protocol: 6, SrcAddr: context.Source.Address, DstAddr: context.Frontends[0].Address,
+			SrcPort: 53776, DstPort: 80, TCPFlags: 0x02, TCPSequence: 100,
+		},
+		{
+			Kind: model.KindPacket, Side: "backend", WallTime: now.Add(time.Millisecond),
+			Protocol: 6, SrcAddr: context.Source.Address, DstAddr: context.Backends[0].Address,
+			SrcPort: 53776, DstPort: 80, TCPFlags: 0x02, TCPSequence: 100,
+		},
+		{
+			Kind: model.KindPacket, Side: "backend", WallTime: now.Add(2 * time.Millisecond),
+			Protocol: 6, SrcAddr: context.Backends[0].Address, DstAddr: context.Source.Address,
+			SrcPort: 80, DstPort: 53776, TCPFlags: 0x12, TCPSequence: 500, TCPAck: 101,
+		},
+		{
+			Kind: model.KindPacket, Side: "source", WallTime: now.Add(3 * time.Millisecond),
+			Protocol: 6, SrcAddr: context.Frontends[0].Address, DstAddr: context.Source.Address,
+			SrcPort: 80, DstPort: 53776, TCPFlags: 0x12, TCPSequence: 500, TCPAck: 101,
+		},
+		{
+			Kind: model.KindPacket, Side: "source", WallTime: now.Add(4 * time.Millisecond),
+			Protocol: 6, SrcAddr: context.Source.Address, DstAddr: context.Frontends[0].Address,
+			SrcPort: 53776, DstPort: 80, TCPFlags: 0x18, TCPSequence: 101, TCPAck: 501,
+		},
+		{
+			Kind: model.KindPacket, Side: "backend", WallTime: now.Add(5 * time.Millisecond),
+			Protocol: 6, SrcAddr: context.Source.Address, DstAddr: context.Backends[0].Address,
+			SrcPort: 53776, DstPort: 80, TCPFlags: 0x18, TCPSequence: 101, TCPAck: 501,
+		},
+		{
+			Kind: model.KindPacket, Side: "backend", WallTime: now.Add(6 * time.Millisecond),
+			Protocol: 6, SrcAddr: context.Backends[0].Address, DstAddr: context.Source.Address,
+			SrcPort: 80, DstPort: 53776, TCPFlags: 0x18, TCPSequence: 501, TCPAck: 120,
+		},
+		{
+			Kind: model.KindPacket, Side: "source", WallTime: now.Add(7 * time.Millisecond),
+			Protocol: 6, SrcAddr: context.Frontends[0].Address, DstAddr: context.Source.Address,
+			SrcPort: 80, DstPort: 53776, TCPFlags: 0x18, TCPSequence: 501, TCPAck: 120,
+		},
+	}
+	var current tea.Model = m
+	for _, event := range events {
+		current, _ = current.Update(observationMsg{observation: event})
+	}
+	view := current.(Model).View()
+	if !strings.Contains(view, "● to destination Pod") ||
+		!strings.Contains(view, "Matching SYN observed through the destination Pod boundary.") ||
+		!strings.Contains(view, "showing 1-8 of 8 observations") ||
+		strings.Count(view, "PSH-ACK") != 4 {
+		t.Fatalf("observed backend was not reflected in datapath view:\n%s", view)
 	}
 }
 
