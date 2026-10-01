@@ -1,0 +1,12 @@
+flowchart TB
+    A["Resolve source and destination"]
+    B["Resolve ready Service and DNS backends"]
+    C["Build capture targets grouped by node"]
+    D["Create one agent Pod per involved node"]
+    E["Open independent capture sessions"]
+    F["Stream and enrich observations"]
+    G["Select newest relevant evidence"]
+    H["Render map, diagnosis, details, and history"]
+    I["Delete agents"]
+
+    A --> B --> C --> D --> E --> F --> G --> H --> I

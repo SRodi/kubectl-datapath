@@ -17,27 +17,13 @@ claims.
 5. **Scale by node, not attachment.** One agent Pod on each involved node hosts
    independent capture sessions.
 6. **Keep artifacts reviewable.** Observations are versioned NDJSON; diagrams
-   are Mermaid stored beside the code.
+   are generated SVGs with Mermaid sources stored beside them.
 
 ## System architecture
 
-```mermaid
-flowchart TB
-    CLI["Local client<br/>credentials + destination resolver"]
-    K8S["Kubernetes metadata<br/>Pods · Services · EndpointSlices · Policies"]
-    SA["Source-node agent<br/>source veth + connect + underlay"]
-    DA["Destination-node agent<br/>destination veths + underlay"]
-    OBS["Versioned observations<br/>packet · connect · transit · status"]
-    COR["Evidence correlator<br/>attempts · DNS · translation · freshness"]
-    UI["TUI / NDJSON"]
+![System architecture](diagrams/system-architecture.svg)
 
-    CLI --> K8S
-    K8S -->|"create / stream logs / delete"| SA
-    K8S -->|"create / stream logs / delete"| DA
-    SA --> OBS
-    DA --> OBS
-    OBS --> COR --> UI
-```
+[Mermaid source](diagrams/system-architecture.mmd)
 
 ### Trust boundary
 
@@ -59,20 +45,9 @@ six privileged Pods to two without combining evidence identities.
 
 ## Trace lifecycle
 
-```mermaid
-flowchart TB
-    A["Resolve source and destination"]
-    B["Resolve ready Service and DNS backends"]
-    C["Build capture targets grouped by node"]
-    D["Create one agent Pod per involved node"]
-    E["Open independent capture sessions"]
-    F["Stream and enrich observations"]
-    G["Select newest relevant evidence"]
-    H["Render map, diagnosis, details, and history"]
-    I["Delete agents"]
+![Trace lifecycle](diagrams/trace-lifecycle.svg)
 
-    A --> B --> C --> D --> E --> F --> G --> H --> I
-```
+[Mermaid source](diagrams/trace-lifecycle.mmd)
 
 All targets are known before agents start. A node agent receives a list of
 Pod-UID or route targets, opens one capture session for each, and multiplexes
@@ -94,29 +69,9 @@ and startup overhead.
 The TUI map represents network namespaces and instrumented boundaries, not an
 idealized packet-delivery promise.
 
-```mermaid
-flowchart TB
-    APP["Application socket<br/>connect intent"]
+![Datapath observation model](diagrams/datapath-observation.svg)
 
-    subgraph SN["Source node"]
-        SP["Source Pod network namespace"]
-        SV["Source host-veth<br/>pre/post Pod boundary"]
-        SU["Route-selected underlay interface"]
-        SP --> SV --> SU
-    end
-
-    NET["Native route or VXLAN underlay"]
-
-    subgraph DN["Destination node"]
-        DU["Route-selected underlay interface"]
-        DV["Destination host-veth"]
-        DP["Destination Pod network namespace"]
-        DU --> DV --> DP
-    end
-
-    APP --> SP
-    SU --> NET --> DU
-```
+[Mermaid source](diagrams/datapath-observation.mmd)
 
 ### What each point proves
 
@@ -136,31 +91,18 @@ evidence,” not “delivered” and “dropped.”
 
 For a Service trace, the client correlates three address views:
 
-```mermaid
-flowchart TB
-    A["Application intent<br/>Service ClusterIP"]
-    B["Source Pod boundary<br/>Service or backend address"]
-    C["Backend Pod boundary<br/>selected Pod address"]
+![Service translation evidence](diagrams/service-translation.svg)
 
-    A -->|"compare destination"| B
-    B -->|"compare selected TCP attempt"| C
-```
+[Mermaid source](diagrams/service-translation.mmd)
 
 A changed address localizes translation relative to observation points. It does
 not identify the specific kube-proxy or CNI program responsible.
 
 DNS is a prerequisite path, not background noise:
 
-```mermaid
-flowchart TB
-    A["Resolver intent<br/>kube-dns Service"]
-    B["Source boundary<br/>Service or CoreDNS address"]
-    C["Source underlay"]
-    D["CoreDNS boundary"]
-    E["DNS response"]
+![DNS evidence path](diagrams/dns-path.svg)
 
-    A --> B --> C --> D --> E
-```
+[Mermaid source](diagrams/dns-path.mmd)
 
 If a newer DNS query has no response, it becomes the primary focus and an older
 backend TCP attempt becomes historical only when the DNS and backend connect

@@ -1,0 +1,8 @@
+flowchart TB
+    A["Resolver intent<br/>kube-dns Service"]
+    B["Source boundary<br/>Service or CoreDNS address"]
+    C["Source underlay"]
+    D["CoreDNS boundary"]
+    E["DNS response"]
+
+    A --> B --> C --> D --> E

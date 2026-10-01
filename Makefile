@@ -21,6 +21,7 @@ GORELEASER_VERSION ?= v2.18.2
 KREW_LOCAL_MANIFEST ?= dist/datapath.yaml
 
 .PHONY: generate build test vet fmt check clean ci-unit \
+	architecture-diagrams check-architecture-diagrams \
 	docker-build docker-push print-registry-image kind-load image-pull-secret \
 	kind-kindnet-up kind-flannel-up kind-cilium-up kind-calico-up kind-down \
 	e2e-kindnet e2e-flannel e2e-cilium e2e-calico e2e-all \
@@ -46,6 +47,7 @@ check: test vet
 
 ci-unit: generate
 	git diff --exit-code
+	$(MAKE) check-architecture-diagrams
 	$(MAKE) check
 	$(MAKE) build
 	./bin/kubectl-datapath replay --no-tui testdata/tcp-success.ndjson >/dev/null
@@ -55,6 +57,12 @@ ci-unit: generate
 clean:
 	rm -f $(BINARY)
 	rm -rf dist
+
+architecture-diagrams:
+	./scripts/render-architecture-diagrams.sh
+
+check-architecture-diagrams:
+	./scripts/render-architecture-diagrams.sh --check
 
 krew-local-package:
 	go run github.com/goreleaser/goreleaser/v2@$(GORELEASER_VERSION) \

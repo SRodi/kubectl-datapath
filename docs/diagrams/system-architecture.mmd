@@ -1,0 +1,15 @@
+flowchart TB
+    CLI["Local client<br/>credentials + destination resolver"]
+    K8S["Kubernetes metadata<br/>Pods · Services · EndpointSlices · Policies"]
+    SA["Source-node agent<br/>source veth + connect + underlay"]
+    DA["Destination-node agent<br/>destination veths + underlay"]
+    OBS["Versioned observations<br/>packet · connect · transit · status"]
+    COR["Evidence correlator<br/>attempts · DNS · translation · freshness"]
+    UI["TUI / NDJSON"]
+
+    CLI --> K8S
+    K8S -->|"create / stream logs / delete"| SA
+    K8S -->|"create / stream logs / delete"| DA
+    SA --> OBS
+    DA --> OBS
+    OBS --> COR --> UI

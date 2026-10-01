@@ -1,0 +1,7 @@
+flowchart TB
+    A["Application intent<br/>Service ClusterIP"]
+    B["Source Pod boundary<br/>Service or backend address"]
+    C["Backend Pod boundary<br/>selected Pod address"]
+
+    A -->|"compare destination"| B
+    B -->|"compare selected TCP attempt"| C

@@ -29,21 +29,9 @@ Use `kubectl-datapath` when you need to answer questions such as:
 
 ## How it works
 
-```mermaid
-flowchart TB
-    U["kubectl-datapath client<br/>Kubernetes credentials stay here"]
-    S["Source-node agent<br/>source veth + connect + underlay"]
-    D["Destination-node agent<br/>destination veths + underlay"]
-    E["Versioned observations<br/>packet · connect · transit · status"]
-    T["Evidence correlation<br/>Kubernetes metadata + attempts + DNS"]
-    V["Terminal UI or NDJSON"]
+![kubectl-datapath architecture](docs/diagrams/overview.svg)
 
-    U -->|"creates one short-lived Pod per involved node"| S
-    U --> D
-    S --> E
-    D --> E
-    E --> T --> V
-```
+[Mermaid source](docs/diagrams/overview.mmd)
 
 Agents are privileged because they attach eBPF programs on their node, but
 they receive no ServiceAccount token and are deleted when the trace ends.
@@ -262,9 +250,18 @@ and runs `kubectl datapath version`. Installation refuses to reuse an existing
 plugin so stale binaries cannot pass the smoke test; use the reinstall target
 after code changes.
 
-The documentation intentionally uses GitHub-flavored Markdown and Mermaid.
-Diagrams are reviewed and versioned beside the code; no generated screenshots
-or documentation site are required.
+Architecture diagrams are generated from the version-controlled Mermaid files:
+
+```sh
+make architecture-diagrams
+make check-architecture-diagrams
+```
+
+Commit both the `.mmd` source and generated `.svg`. CI rejects stale SVGs.
+
+The documentation uses GitHub-flavored Markdown and generated SVG diagrams.
+Mermaid sources remain versioned beside the SVGs so diagram changes stay easy
+to review without requiring a documentation site.
 
 For component boundaries, capture semantics, and design tradeoffs, see
 [Architecture and design](docs/architecture.md).

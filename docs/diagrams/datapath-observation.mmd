@@ -1,0 +1,21 @@
+flowchart TB
+    APP["Application socket<br/>connect intent"]
+
+    subgraph SN["Source node"]
+        SP["Source Pod network namespace"]
+        SV["Source host-veth<br/>pre/post Pod boundary"]
+        SU["Route-selected underlay interface"]
+        SP --> SV --> SU
+    end
+
+    NET["Native route or VXLAN underlay"]
+
+    subgraph DN["Destination node"]
+        DU["Route-selected underlay interface"]
+        DV["Destination host-veth"]
+        DP["Destination Pod network namespace"]
+        DU --> DV --> DP
+    end
+
+    APP --> SP
+    SU --> NET --> DU
