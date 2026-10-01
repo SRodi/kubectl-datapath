@@ -121,8 +121,6 @@ run_as_root() {
 }
 
 prepare_flannel_host() {
-  [ "$CNI" = "flannel" ] || return
-
   local ipv4_bridge_sysctl="/proc/sys/net/bridge/bridge-nf-call-iptables"
   if [ ! -e "$ipv4_bridge_sysctl" ]; then
     require_command modprobe
@@ -143,7 +141,9 @@ for command in kubectl jq; do
 done
 if [ "$EXISTING_CLUSTER" != "1" ]; then
   require_command docker
-  prepare_flannel_host
+  if [ "$CNI" = "flannel" ]; then
+    prepare_flannel_host
+  fi
 fi
 
 create_cluster() {
