@@ -10,3 +10,16 @@ func TestKernelAtLeast(t *testing.T) {
 		t.Fatal("expected 6.1 not to satisfy 6.6")
 	}
 }
+
+func TestProbeLocalReportsPacketStrategies(t *testing.T) {
+	compatibility := ProbeLocal()
+	seen := make(map[string]bool)
+	for _, capability := range compatibility.Capabilities {
+		seen[capability.Name] = true
+	}
+	for _, name := range []string{"TCX strategy", "classic TC strategy"} {
+		if !seen[name] {
+			t.Fatalf("missing capability %q", name)
+		}
+	}
+}

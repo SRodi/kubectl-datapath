@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"sync"
@@ -111,25 +112,33 @@ func (Strategy) Open(ctx context.Context, target capture.Target) (capture.Sessio
 	}
 
 	session := &session{
-		target:  target,
-		objects: objects,
-		links:   links,
-		reader:  reader,
-		events:  make(chan model.Observation, 1024),
-		errors:  make(chan error, 1),
+		target:       target,
+		objects:      objects,
+		attachments:  linksToClosers(links),
+		reader:       reader,
+		events:       make(chan model.Observation, 1024),
+		errors:       make(chan error, 1),
+		packetHooks:  []string{"tcx/ingress", "tcx/egress"},
+		packetPoint:  "host-veth/tcx",
+		transitPoint: "node-transit/tcx",
+		hookEvidence: "TCX hook",
 	}
 	go session.run(ctx)
 	return session, nil
 }
 
 type session struct {
-	target  capture.Target
-	objects bpfObjects
-	links   []link.Link
-	reader  *ringbuf.Reader
-	events  chan model.Observation
-	errors  chan error
-	once    sync.Once
+	target       capture.Target
+	objects      bpfObjects
+	attachments  []io.Closer
+	reader       *ringbuf.Reader
+	events       chan model.Observation
+	errors       chan error
+	once         sync.Once
+	packetHooks  []string
+	packetPoint  string
+	transitPoint string
+	hookEvidence string
 }
 
 func (s *session) Events() <-chan model.Observation { return s.events }
@@ -156,7 +165,7 @@ func (s *session) run(ctx context.Context) {
 	}()
 	// This offset is node-local; converted wall times must not order observations across nodes.
 	offset := time.Now().UnixNano() - monotonicNow()
-	hooks := []string{"tcx/ingress", "tcx/egress"}
+	hooks := append([]string(nil), s.packetHooks...)
 	if s.target.CaptureConnect {
 		hooks = append(hooks, "fentry/__sys_connect")
 	}
@@ -193,7 +202,9 @@ func (s *session) run(ctx context.Context) {
 			s.errors <- fmt.Errorf("decode BPF event: %w", err)
 			return
 		}
-		observation := observationFromRaw(s.target, raw, offset)
+		observation := observationFromRawWithHook(
+			s.target, raw, offset, s.packetPoint, s.transitPoint, s.hookEvidence,
+		)
 		select {
 		case s.events <- observation:
 		case <-ctx.Done():
@@ -227,7 +238,7 @@ func (s *session) reportLoss(ctx context.Context, done <-chan struct{}) {
 				continue
 			}
 			reported = lost
-			hooks := []string{"tcx/ingress", "tcx/egress"}
+			hooks := append([]string(nil), s.packetHooks...)
 			if s.target.CaptureConnect {
 				hooks = append(hooks, "fentry/__sys_connect")
 			}
@@ -258,17 +269,28 @@ func (s *session) reportLoss(ctx context.Context, done <-chan struct{}) {
 }
 
 func observationFromRaw(target capture.Target, raw bpfEvent, wallOffset int64) model.Observation {
+	return observationFromRawWithHook(
+		target, raw, wallOffset, "host-veth/tcx", "node-transit/tcx", "TCX hook",
+	)
+}
+
+func observationFromRawWithHook(
+	target capture.Target,
+	raw bpfEvent,
+	wallOffset int64,
+	packetPoint, transitPoint, hookEvidence string,
+) model.Observation {
 	kind := model.KindPacket
-	point := "host-veth/tcx"
-	evidence := []string{"attached interface", "TCX hook"}
+	point := packetPoint
+	evidence := []string{"attached interface", hookEvidence}
 	if raw.Kind == 2 {
 		kind = model.KindConnect
 		point = "application/connect"
 		evidence = []string{"connect syscall", "target cgroup"}
 	} else if raw.Kind == 3 {
 		kind = model.KindTransit
-		point = "node-transit/tcx"
-		evidence = []string{"route-selected interface", "TCX hook", "selected inner tuple"}
+		point = transitPoint
+		evidence = []string{"route-selected interface", hookEvidence, "selected inner tuple"}
 	}
 	observation := model.Observation{
 		SchemaVersion: model.SchemaVersion,
@@ -361,10 +383,18 @@ func monotonicNow() int64 {
 func (s *session) Close() error {
 	s.once.Do(func() {
 		s.reader.Close()
-		for _, attached := range s.links {
+		for _, attached := range s.attachments {
 			attached.Close()
 		}
 		s.objects.Close()
 	})
 	return nil
+}
+
+func linksToClosers(links []link.Link) []io.Closer {
+	closers := make([]io.Closer, 0, len(links))
+	for _, attached := range links {
+		closers = append(closers, attached)
+	}
+	return closers
 }

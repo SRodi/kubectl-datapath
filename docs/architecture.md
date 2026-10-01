@@ -43,6 +43,11 @@ The privilege is broad at the node boundary, so minimizing agent lifetime and
 count matters. Grouping by node reduces a typical cross-node Service trace from
 six privileged Pods to two without combining evidence identities.
 
+This credential boundary is not a confinement boundary. A privileged,
+host-PID agent should be treated as having node-root-equivalent access even
+though caller credentials and ServiceAccount tokens are absent. See
+[Security and threat model](security.md).
+
 ## Trace lifecycle
 
 ![Trace lifecycle](diagrams/trace-lifecycle.svg)
@@ -154,14 +159,18 @@ Event loss changes a missing point to **incomplete**. Cross-node events retain
 node-local monotonic order; clocks from different nodes are never used to
 calculate latency.
 
+Each BPF session emits a monotonic sequence and cumulative ring-buffer loss.
+The client validates sequence continuity per attachment. A gap not explained
+by ring-buffer loss is reported separately as log-transport loss.
+
 ## Capture implementation
 
 | Capture | Attachment | Filter |
 |---|---|---|
-| Pod packets | TCX on host-side veth ingress and egress | Selected Pod interface; client trace correlation |
+| Pod packets | TCX, or classic TC fallback, on host-side veth ingress and egress | Selected Pod interface; client trace correlation |
 | Application intent | BTF/fentry on `__sys_connect` | Selected source Pod cgroup IDs |
-| Native transit | TCX on route-selected interface | Both selected inner addresses |
-| VXLAN transit | TCX with UDP `8472` / `4789` decoding | Both selected inner addresses |
+| Native transit | TCX, or classic TC fallback, on route-selected interface | Both selected inner addresses |
+| VXLAN transit | TCX, or classic TC fallback, with UDP `8472` / `4789` decoding | Both selected inner addresses |
 
 The agent resolves Pod interfaces from the Pod UID and host cgroup/procfs
 state. Selected source, destination, Service, backend, and DNS addresses are
@@ -170,9 +179,17 @@ discarded before ring-buffer emission. Underlay interfaces come from a route
 lookup to the remote Node InternalIP; no default node-interface name is
 assumed.
 
-Pod interface discovery currently expects `eth0`. The application path uses
-the Pod's primary address; secondary dual-stack addresses and Multus interfaces
-are explicit current limitations.
+TCX is the preferred packet attachment because its link lifecycle is
+kernel-owned. If TCX attachment reports that the hook is unsupported, the
+agent installs uniquely identified direct-action filters on a shared `clsact`
+qdisc and removes only those filters at cleanup. It never removes the shared
+qdisc, which may also contain CNI-managed filters. Connect intent still uses
+BTF/fentry in both modes.
+
+Pod interface discovery follows the Pod network namespace's IPv4 or IPv6
+default route. If neither route exists, the agent accepts exactly one
+non-loopback interface. Secondary Multus interfaces remain an explicit current
+limitation.
 
 Current inner-tuple decoding supports native IPv4/IPv6 and VXLAN. Geneve,
 IP-in-IP, WireGuard, and IPsec are not decoded.

@@ -15,7 +15,6 @@ import (
 
 	"github.com/SRodi/kubectl-datapath/internal/agent"
 	"github.com/SRodi/kubectl-datapath/internal/capture"
-	"github.com/SRodi/kubectl-datapath/internal/capture/tcx"
 	"github.com/SRodi/kubectl-datapath/internal/kube"
 	"github.com/SRodi/kubectl-datapath/internal/model"
 )
@@ -66,7 +65,7 @@ func newAgentCommand() *cobra.Command {
 
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
-			strategy := tcx.Strategy{}
+			strategies := agent.NewCaptureStrategies()
 			sessions := make([]namedCaptureSession, 0, len(targets))
 			for _, target := range targets {
 				resolved, err := resolveAgentTarget(
@@ -76,7 +75,7 @@ func newAgentCommand() *cobra.Command {
 					closeCaptureSessions(sessions)
 					return fmt.Errorf("%s: %w", target.AttachmentID, err)
 				}
-				session, err := strategy.Open(ctx, resolved)
+				session, err := strategies.Open(ctx, resolved)
 				if err != nil {
 					closeCaptureSessions(sessions)
 					return fmt.Errorf("%s: %w", target.AttachmentID, err)

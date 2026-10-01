@@ -23,6 +23,42 @@ type AgentStream struct {
 	close        func()
 }
 
+type sequenceState struct {
+	sequence      uint64
+	ringLost      uint64
+	transportLost uint64
+}
+
+type sequenceTracker map[string]sequenceState
+
+func (t sequenceTracker) annotate(observation model.Observation) model.Observation {
+	if observation.Sequence == 0 {
+		return observation
+	}
+	key := observation.AttachmentID
+	if key == "" {
+		key = observation.Side
+	}
+	state := t[key]
+	if observation.Sequence > state.sequence+1 {
+		gap := observation.Sequence - state.sequence - 1
+		ringLoss := uint64(0)
+		if observation.Lost > state.ringLost {
+			ringLoss = observation.Lost - state.ringLost
+		}
+		if gap > ringLoss {
+			state.transportLost += gap - ringLoss
+		}
+	}
+	if observation.Sequence > state.sequence {
+		state.sequence = observation.Sequence
+		state.ringLost = observation.Lost
+	}
+	observation.TransportLost = state.transportLost
+	t[key] = state
+	return observation
+}
+
 func (s *AgentStream) Close() {
 	if s.close != nil {
 		s.close()
@@ -66,12 +102,14 @@ func (c *Client) StartAgent(ctx context.Context, options AgentOptions, index *en
 		defer logs.Close()
 		scanner := bufio.NewScanner(logs)
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		sequences := make(sequenceTracker)
 		for scanner.Scan() {
 			observation, err := model.Decode(scanner.Bytes())
 			if err != nil {
 				errors <- fmt.Errorf("decode agent %s output %q: %w", created.Name, scanner.Text(), err)
 				return
 			}
+			observation = sequences.annotate(observation)
 			if index != nil {
 				observation = index.Apply(observation)
 			}

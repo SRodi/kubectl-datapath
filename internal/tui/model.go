@@ -45,6 +45,7 @@ type Model struct {
 	hasActiveFlow    bool
 	evidenceCounts   map[model.Kind]uint64
 	lostByAttachment map[string]uint64
+	transportLost    map[string]uint64
 	showDetails      bool
 	viewOffset       int
 	followView       bool
@@ -74,6 +75,7 @@ func New(title string, observations <-chan model.Observation, errors <-chan erro
 		tracePackets:     make(map[string][]model.Observation),
 		evidenceCounts:   make(map[model.Kind]uint64),
 		lostByAttachment: make(map[string]uint64),
+		transportLost:    make(map[string]uint64),
 	}
 }
 
@@ -154,6 +156,9 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if message.observation.Lost > m.lostByAttachment[attachment] {
 			m.lostByAttachment[attachment] = message.observation.Lost
+		}
+		if message.observation.TransportLost > m.transportLost[attachment] {
+			m.transportLost[attachment] = message.observation.TransportLost
 		}
 		m.tracker.Observe(message.observation)
 		m.trace.Observe(message.observation)
@@ -259,20 +264,24 @@ func (m Model) renderContent() string {
 	for _, current := range m.lostByAttachment {
 		lost += current
 	}
+	var transportLost uint64
+	for _, current := range m.transportLost {
+		transportLost += current
+	}
 	status := "observing"
 	if m.closed {
 		status = "complete"
 	}
 	if serviceTrace {
-		fmt.Fprintf(&builder, "%s  Attempts %d  Boundary %d  Transit %d  Connect %d  Lost %d\n\n",
+		fmt.Fprintf(&builder, "%s  Attempts %d  Boundary %d  Transit %d  Connect %d  Lost %d  Transport %d\n\n",
 			subtleStyle.Render("Status "+status), len(attempts),
 			m.evidenceCounts[model.KindPacket], m.evidenceCounts[model.KindTransit],
-			m.evidenceCounts[model.KindConnect], lost)
+			m.evidenceCounts[model.KindConnect], lost, transportLost)
 	} else {
-		fmt.Fprintf(&builder, "%s  Flows %d  Boundary %d  Transit %d  Connect %d  Lost %d\n\n",
+		fmt.Fprintf(&builder, "%s  Flows %d  Boundary %d  Transit %d  Connect %d  Lost %d  Transport %d\n\n",
 			subtleStyle.Render("Status "+status), len(flows),
 			m.evidenceCounts[model.KindPacket], m.evidenceCounts[model.KindTransit],
-			m.evidenceCounts[model.KindConnect], lost)
+			m.evidenceCounts[model.KindConnect], lost, transportLost)
 	}
 
 	datapath := m.trace.Datapath()

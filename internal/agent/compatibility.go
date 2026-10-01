@@ -32,7 +32,12 @@ func ProbeLocal() Compatibility {
 		{
 			Name:      "TCX strategy",
 			Available: kernelAtLeast(result.Kernel, 6, 6),
-			Detail:    "requires Linux 6.6+ and CAP_BPF/CAP_NET_ADMIN at runtime",
+			Detail:    "preferred packet hook; Linux 6.6+ heuristic and CAP_BPF/CAP_NET_ADMIN required",
+		},
+		{
+			Name:      "classic TC strategy",
+			Available: runtime.GOOS == "linux",
+			Detail:    "fallback packet hook; requires clsact, BPF, and CAP_NET_ADMIN at runtime",
 		},
 	}
 	return result

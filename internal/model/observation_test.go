@@ -14,6 +14,7 @@ func TestObservationRoundTripPreservesIPv6AndCookie(t *testing.T) {
 		DstAddr:       netip.MustParseAddr("2001:db8::2"),
 		Protocol:      6,
 		NetnsCookie:   1<<48 + 7,
+		TransportLost: 3,
 		Confidence:    ConfidenceExact,
 	}
 	data, err := json.Marshal(want)
@@ -24,7 +25,8 @@ func TestObservationRoundTripPreservesIPv6AndCookie(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.SrcAddr != want.SrcAddr || got.DstAddr != want.DstAddr || got.NetnsCookie != want.NetnsCookie {
+	if got.SrcAddr != want.SrcAddr || got.DstAddr != want.DstAddr ||
+		got.NetnsCookie != want.NetnsCookie || got.TransportLost != want.TransportLost {
 		t.Fatalf("round trip = %+v, want %+v", got, want)
 	}
 }
@@ -63,4 +65,18 @@ func TestObservationRoundTripPreservesVXLANTransit(t *testing.T) {
 		got.OuterSrcAddr != want.OuterSrcAddr || got.OuterDstAddr != want.OuterDstAddr {
 		t.Fatalf("round trip = %+v, want %+v", got, want)
 	}
+}
+
+func FuzzDecodeObservation(f *testing.F) {
+	f.Add([]byte(`{"schema_version":1,"kind":"status","attachment_id":"source"}`))
+	f.Add([]byte(`{"schema_version":1,"kind":"packet","src_addr":"10.0.0.1","dst_addr":"10.0.0.2"}`))
+	f.Add([]byte(`{"schema_version":`))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		observation, err := Decode(data)
+		if err == nil {
+			if err := observation.Validate(); err != nil {
+				t.Fatalf("Decode returned invalid observation: %v", err)
+			}
+		}
+	})
 }

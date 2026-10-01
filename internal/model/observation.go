@@ -123,6 +123,7 @@ type Observation struct {
 	WallTime      time.Time     `json:"wall_time,omitempty"`
 	Sequence      uint64        `json:"sequence,omitempty"`
 	Lost          uint64        `json:"lost,omitempty"`
+	TransportLost uint64        `json:"transport_lost,omitempty"`
 	Family        uint8         `json:"family,omitempty"`
 	Protocol      uint8         `json:"protocol,omitempty"`
 	SrcAddr       netip.Addr    `json:"src_addr,omitempty"`

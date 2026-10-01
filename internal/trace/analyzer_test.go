@@ -417,6 +417,28 @@ func TestAnalyzerDoesNotInterpretGapWhenEventsWereLost(t *testing.T) {
 	}
 }
 
+func TestAnalyzerDoesNotInterpretGapWhenTransportEventsWereLost(t *testing.T) {
+	analyzer := NewAnalyzer()
+	context := testContext()
+	analyzer.Observe(model.Observation{Kind: model.KindTraceContext, Trace: &context})
+	analyzer.Observe(model.Observation{
+		Kind: model.KindStatus, Side: "backend", AttachmentID: "backend-1",
+		Interface: "veth-backend", TransportLost: 1,
+	})
+	analyzer.Observe(model.Observation{
+		Kind: model.KindPacket, Side: "source", WallTime: time.Now(),
+		Protocol: 6, SrcAddr: context.Source.Address, DstAddr: context.Backends[0].Address,
+		SrcPort: 1234, DstPort: 8080, TCPFlags: 0x02, TCPSequence: 100,
+	})
+	if got := analyzer.Conclusion(); !strings.Contains(got, "event loss prevents interpreting") {
+		t.Fatalf("conclusion = %q", got)
+	}
+	health := analyzer.Health()[2]
+	if health.State != "INCOMPLETE" || !strings.Contains(health.Detail, "transport loss=1") {
+		t.Fatalf("backend health = %#v", health)
+	}
+}
+
 func TestAnalyzerSeparatesCurrentAndPreviousAttempts(t *testing.T) {
 	analyzer := NewAnalyzer()
 	context := testContext()
@@ -592,6 +614,10 @@ func TestAnalyzerMarksUninstrumentedBackendUnavailable(t *testing.T) {
 		if health.Name == "backend/boundary" {
 			if health.State != "UNAVAILABLE" || !strings.Contains(health.Detail, "--max-backends") {
 				t.Fatalf("backend health = %#v", health)
+			}
+			datapath := analyzer.Datapath()
+			if datapath == nil || !strings.Contains(datapath.Diagnosis, "--max-backends") {
+				t.Fatalf("datapath diagnosis = %#v", datapath)
 			}
 			return
 		}

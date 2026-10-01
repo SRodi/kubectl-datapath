@@ -54,6 +54,7 @@ type Analyzer struct {
 	ready               map[string]model.Observation
 	attachments         map[string]model.Observation
 	lost                map[string]uint64
+	transportLost       map[string]uint64
 	packets             map[string]int
 	transit             []model.Observation
 	dnsIntent           *model.Observation
@@ -71,6 +72,7 @@ func NewAnalyzer() *Analyzer {
 		ready:           make(map[string]model.Observation),
 		attachments:     make(map[string]model.Observation),
 		lost:            make(map[string]uint64),
+		transportLost:   make(map[string]uint64),
 		packets:         make(map[string]int),
 	}
 }
@@ -113,6 +115,9 @@ type AttemptSummary struct {
 func (a *Analyzer) Observe(observation model.Observation) {
 	if observation.Lost > a.lost[observation.Side] {
 		a.lost[observation.Side] = observation.Lost
+	}
+	if observation.TransportLost > a.transportLost[observation.Side] {
+		a.transportLost[observation.Side] = observation.TransportLost
 	}
 	switch observation.Kind {
 	case model.KindTraceContext:
@@ -687,6 +692,9 @@ func diagnoseDatapath(view DatapathView, mode model.TraceMode, dnsFocus bool) st
 			return "Trace incomplete: event loss prevents localizing the evidence gap."
 		}
 	}
+	if view.DestinationBoundary.State == "UNAVAILABLE" {
+		return "Trace incomplete: the selected backend exceeds --max-backends and was not instrumented."
+	}
 	evidence := "matching traffic"
 	if dnsFocus {
 		evidence = "matching DNS query"
@@ -825,7 +833,8 @@ func (a *Analyzer) Conclusion() string {
 	}
 	source := a.active.sourceSYNs[0]
 	if a.active.backendSYN == nil {
-		if a.lost["source"] > 0 || a.lost["backend"] > 0 {
+		if a.lost["source"] > 0 || a.lost["backend"] > 0 ||
+			a.transportLost["source"] > 0 || a.transportLost["backend"] > 0 {
 			return "Trace incomplete: event loss prevents interpreting the missing backend SYN"
 		}
 		if len(a.active.sourceSYNs) > 1 {
@@ -1029,9 +1038,13 @@ func (a *Analyzer) mode() model.TraceMode {
 
 func (a *Analyzer) healthWithLoss(name string, observed bool, ready model.Observation, evidence, side string) Health {
 	result := health(name, observed, ready, evidence)
-	if !observed && a.lost[side] > 0 {
+	if !observed && (a.lost[side] > 0 || a.transportLost[side] > 0) {
 		result.State = "INCOMPLETE"
-		result.Detail = fmt.Sprintf("event loss=%d", a.lost[side])
+		result.Detail = fmt.Sprintf(
+			"ring-buffer loss=%d transport loss=%d",
+			a.lost[side],
+			a.transportLost[side],
+		)
 	}
 	return result
 }

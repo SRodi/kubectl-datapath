@@ -23,10 +23,16 @@ func TargetForPodUID(procRoot, cgroupRoot, podUID string) (Target, error) {
 		return Target{}, err
 	}
 	pid := pids[0]
-	iflinkPath := filepath.Join(procRoot, strconv.Itoa(pid), "root", "sys", "class", "net", "eth0", "iflink")
+	podInterface, err := podPrimaryInterface(procRoot, pid)
+	if err != nil {
+		return Target{}, err
+	}
+	iflinkPath := filepath.Join(
+		procRoot, strconv.Itoa(pid), "root", "sys", "class", "net", podInterface, "iflink",
+	)
 	data, err := os.ReadFile(iflinkPath)
 	if err != nil {
-		return Target{}, fmt.Errorf("read target iflink: %w", err)
+		return Target{}, fmt.Errorf("read target interface %s iflink: %w", podInterface, err)
 	}
 	ifindex, err := strconv.Atoi(strings.TrimSpace(string(data)))
 	if err != nil {
@@ -59,6 +65,64 @@ func TargetForPodUID(procRoot, cgroupRoot, podUID string) (Target, error) {
 		target.CgroupIDs = append(target.CgroupIDs, cgroupID)
 	}
 	return target, nil
+}
+
+func podPrimaryInterface(procRoot string, pid int) (string, error) {
+	for _, routeFile := range []string{"route", "ipv6_route"} {
+		iface, err := defaultRouteInterface(
+			filepath.Join(procRoot, strconv.Itoa(pid), "net", routeFile),
+			routeFile == "ipv6_route",
+		)
+		if err == nil && iface != "" {
+			return iface, nil
+		}
+	}
+	netRoot := filepath.Join(procRoot, strconv.Itoa(pid), "root", "sys", "class", "net")
+	entries, err := os.ReadDir(netRoot)
+	if err != nil {
+		return "", fmt.Errorf("read target network interfaces: %w", err)
+	}
+	var candidates []string
+	for _, entry := range entries {
+		if entry.Name() != "lo" {
+			candidates = append(candidates, entry.Name())
+		}
+	}
+	if len(candidates) == 1 {
+		return candidates[0], nil
+	}
+	if len(candidates) == 0 {
+		return "", fmt.Errorf("target network namespace has no non-loopback interface")
+	}
+	return "", fmt.Errorf(
+		"target network namespace has no default route and multiple candidate interfaces: %s",
+		strings.Join(candidates, ", "),
+	)
+}
+
+func defaultRouteInterface(path string, ipv6 bool) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if ipv6 {
+			if len(fields) >= 10 && fields[0] == strings.Repeat("0", 32) && fields[1] == "00" {
+				return fields[len(fields)-1], nil
+			}
+			continue
+		}
+		if len(fields) >= 2 && fields[0] != "Iface" && fields[1] == "00000000" {
+			return fields[0], nil
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return "", err
+	}
+	return "", fmt.Errorf("default route not found")
 }
 
 func podCgroupPath(procRoot string, pid int) (string, error) {

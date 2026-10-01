@@ -1,0 +1,2 @@
+{"schema_version":1,"kind":"status","session_id":"transport-loss","attachment_id":"source","side":"source","node":"worker-a","sequence":1,"confidence":"exact"}
+{"schema_version":1,"kind":"packet","session_id":"transport-loss","attachment_id":"source","side":"source","node":"worker-a","point":"host-veth/tcx","direction":"egress","sequence":4,"transport_lost":2,"family":4,"protocol":6,"src_addr":"10.244.1.10","dst_addr":"10.244.2.20","src_port":42120,"dst_port":8080,"packet_length":74,"tcp_flags":2,"confidence":"exact"}

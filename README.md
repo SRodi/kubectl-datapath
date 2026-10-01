@@ -38,13 +38,16 @@ they receive no ServiceAccount token and are deleted when the trace ends.
 
 ## Requirements
 
-- Linux Kubernetes nodes with kernel 6.6 or newer, BTF, cgroup v2, and TCX.
+- Linux Kubernetes nodes with BTF and cgroup v2. TCX is preferred on Linux
+  6.6 or newer; the agent falls back to classic `clsact` TC packet hooks when
+  TCX is unavailable.
 - Permission to create, read logs from, and delete privileged Pods in the
   agent namespace (`kube-system` by default).
 - Pod Security admission and cluster policy must allow the short-lived agents
   to use `hostNetwork`, `hostPID`, and read-only host procfs/cgroup mounts.
-- Selected Pods must use the conventional `eth0` interface. Multus secondary
-  interfaces and Windows nodes are not currently supported.
+- Selected Pods must have a default route or exactly one non-loopback network
+  interface. Multus secondary interfaces and Windows nodes are not currently
+  supported.
 
 Agents expire after 30 minutes if the client disappears. A normal trace
 deletes them immediately when it exits.
@@ -136,8 +139,8 @@ the packet.
 | Evidence | Source |
 |---|---|
 | Application destination | BTF/fentry at `__sys_connect` for the source Pod cgroup |
-| Pod boundary packets | TCX on the host side of the selected Pod veth |
-| Native node transit | TCX on the route-selected node interface |
+| Pod boundary packets | TCX, or classic TC fallback, on the host side of the selected Pod veth |
+| Native node transit | TCX, or classic TC fallback, on the route-selected node interface |
 | VXLAN transit | Outer tuple, UDP ports, VNI, and selected inner tuple |
 | DNS exchange | Source boundary plus ready `kube-dns` EndpointSlice Pods |
 | Configuration context | NetworkPolicies selecting the source or destination Pods |
@@ -163,6 +166,8 @@ evidence.
   its `connect()` intent comes from the same source cgroup. DNS qnames are not
   captured, so the UI states that limitation; older evidence remains history.
 - Event loss changes missing evidence to incomplete evidence.
+- Per-attachment sequence gaps distinguish log-transport loss from BPF
+  ring-buffer loss.
 - Unsupported encapsulation is reported as unavailable or missing evidence,
   never guessed.
 
@@ -265,3 +270,7 @@ to review without requiring a documentation site.
 
 For component boundaries, capture semantics, and design tradeoffs, see
 [Architecture and design](docs/architecture.md).
+
+Before granting access to privileged agents, review the
+[security and threat model](docs/security.md) and the
+[security reporting policy](SECURITY.md).

@@ -831,11 +831,11 @@ func TestStatusCountsAllEvidenceAndAttachmentLoss(t *testing.T) {
 	m := New("counts", observations, errorsChannel)
 	events := []model.Observation{
 		{
-			Kind: model.KindPacket, AttachmentID: "source", Lost: 2,
+			Kind: model.KindPacket, AttachmentID: "source", Lost: 2, TransportLost: 1,
 			Protocol: 6, SrcAddr: netip.MustParseAddr("10.0.0.1"), DstAddr: netip.MustParseAddr("10.0.0.2"),
 		},
 		{
-			Kind: model.KindTransit, AttachmentID: "transit", Lost: 3,
+			Kind: model.KindTransit, AttachmentID: "transit", Lost: 3, TransportLost: 2,
 			Protocol: 6, SrcAddr: netip.MustParseAddr("10.0.0.1"), DstAddr: netip.MustParseAddr("10.0.0.2"),
 		},
 		{
@@ -848,7 +848,7 @@ func TestStatusCountsAllEvidenceAndAttachmentLoss(t *testing.T) {
 		m = updated.(Model)
 	}
 	view := m.View()
-	if !strings.Contains(view, "Boundary 1  Transit 1  Connect 1  Lost 6") {
+	if !strings.Contains(view, "Boundary 1  Transit 1  Connect 1  Lost 6  Transport 3") {
 		t.Fatalf("evidence counters are inaccurate:\n%s", view)
 	}
 }
