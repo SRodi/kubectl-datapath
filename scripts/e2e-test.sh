@@ -108,11 +108,42 @@ require_command() {
   }
 }
 
+run_as_root() {
+  if [ "$(id -u)" -eq 0 ]; then
+    "$@"
+    return
+  fi
+  if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+    sudo "$@"
+    return
+  fi
+  return 1
+}
+
+prepare_flannel_host() {
+  [ "$CNI" = "flannel" ] || return
+
+  local ipv4_bridge_sysctl="/proc/sys/net/bridge/bridge-nf-call-iptables"
+  if [ ! -e "$ipv4_bridge_sysctl" ]; then
+    require_command modprobe
+    log "loading host br_netfilter module required by Flannel"
+    run_as_root modprobe br_netfilter ||
+      fail "Flannel requires br_netfilter; load it as root before running the E2E test"
+  fi
+  [ -e "$ipv4_bridge_sysctl" ] ||
+    fail "br_netfilter loaded without exposing $ipv4_bridge_sysctl"
+  if [ "$(cat "$ipv4_bridge_sysctl")" != "1" ]; then
+    run_as_root sysctl -w net.bridge.bridge-nf-call-iptables=1 >/dev/null ||
+      fail "Flannel requires net.bridge.bridge-nf-call-iptables=1"
+  fi
+}
+
 for command in kubectl jq; do
   require_command "$command"
 done
 if [ "$EXISTING_CLUSTER" != "1" ]; then
   require_command docker
+  prepare_flannel_host
 fi
 
 create_cluster() {
