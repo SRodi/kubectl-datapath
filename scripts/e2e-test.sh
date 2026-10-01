@@ -56,8 +56,25 @@ fail() {
   exit 1
 }
 
+collect_diagnostics() {
+  log "collecting failure diagnostics in $ARTIFACT_DIR"
+  kubectl get pods -A -o wide >"$ARTIFACT_DIR/cluster-pods.txt" 2>&1 || true
+  kubectl get events -A --sort-by=.metadata.creationTimestamp \
+    >"$ARTIFACT_DIR/cluster-events.txt" 2>&1 || true
+  kubectl describe nodes >"$ARTIFACT_DIR/nodes.txt" 2>&1 || true
+  kubectl -n "$NAMESPACE" describe pods >"$ARTIFACT_DIR/application-pods.txt" 2>&1 || true
+  kubectl -n kube-flannel logs -l app=flannel --all-containers --prefix \
+    >"$ARTIFACT_DIR/flannel.log" 2>&1 || true
+  if [ "$CREATED_CLUSTER" = "1" ]; then
+    timeout 90s kind export logs "$ARTIFACT_DIR/kind" --name "$CLUSTER" >/dev/null 2>&1 || true
+  fi
+}
+
 cleanup() {
   local status=$?
+  if [ "$status" -ne 0 ]; then
+    collect_diagnostics
+  fi
   if [ -n "$TRACE_PID" ]; then
     kill -INT "$TRACE_PID" >/dev/null 2>&1 || true
     wait "$TRACE_PID" >/dev/null 2>&1 || true
