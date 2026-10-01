@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -77,11 +78,68 @@ func TestPodPrimaryInterfaceFallsBackToOnlyNonLoopbackInterface(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+
 	got, err := podPrimaryInterface(root, pid)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got != "pod0" {
 		t.Fatalf("interface = %q, want pod0", got)
+	}
+}
+
+func TestTargetResolverIndexesMultiplePodUIDs(t *testing.T) {
+	procRoot := t.TempDir()
+	const podA = "11111111-1111-1111-1111-111111111111"
+	const podB = "22222222-2222-2222-2222-222222222222"
+	pidsByUID := map[string][]string{
+		podA: {"111", "112"},
+		podB: {"221"},
+	}
+	for podUID, pids := range pidsByUID {
+		for _, pid := range pids {
+			processRoot := filepath.Join(procRoot, pid)
+			if err := os.MkdirAll(processRoot, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			cgroup := "0::/kubepods.slice/kubepods-burstable-pod" + podUID + ".slice/container.scope\n"
+			if err := os.WriteFile(filepath.Join(processRoot, "cgroup"), []byte(cgroup), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	resolver, err := NewTargetResolver(procRoot, t.TempDir(), []string{podA, podB})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := resolver.pidsByUID[podA], []int{111, 112}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("pod A PIDs = %v, want %v", got, want)
+	}
+	if got, want := resolver.pidsByUID[podB], []int{221}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("pod B PIDs = %v, want %v", got, want)
+	}
+}
+
+func TestTargetResolverMatchesUnderscoredPodUID(t *testing.T) {
+	procRoot := t.TempDir()
+	processRoot := filepath.Join(procRoot, "321")
+	if err := os.MkdirAll(processRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(processRoot, "cgroup"),
+		[]byte("0::/kubepods.slice/pod12345678_1234_1234_1234_123456789abc\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	const podUID = "12345678-1234-1234-1234-123456789abc"
+	resolver, err := NewTargetResolver(procRoot, t.TempDir(), []string{podUID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resolver.pidsByUID[podUID]; !reflect.DeepEqual(got, []int{321}) {
+		t.Fatalf("indexed PIDs = %v, want [321]", got)
 	}
 }

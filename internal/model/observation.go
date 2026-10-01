@@ -124,6 +124,8 @@ type Observation struct {
 	Sequence      uint64        `json:"sequence,omitempty"`
 	Lost          uint64        `json:"lost,omitempty"`
 	TransportLost uint64        `json:"transport_lost,omitempty"`
+	Final         bool          `json:"final,omitempty"`
+	Complete      bool          `json:"complete,omitempty"`
 	Family        uint8         `json:"family,omitempty"`
 	Protocol      uint8         `json:"protocol,omitempty"`
 	SrcAddr       netip.Addr    `json:"src_addr,omitempty"`
@@ -174,6 +176,12 @@ func (o Observation) Validate() error {
 	}
 	if o.Kind == KindTraceContext && o.Trace == nil {
 		return fmt.Errorf("trace context observation requires trace metadata")
+	}
+	if o.Final && o.Kind != KindStatus {
+		return fmt.Errorf("final watermark requires a status observation")
+	}
+	if o.Complete && !o.Final {
+		return fmt.Errorf("complete capture status requires a final watermark")
 	}
 	return nil
 }

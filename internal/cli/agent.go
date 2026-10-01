@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/netip"
 	"os"
@@ -39,7 +40,11 @@ func newAgentCommand() *cobra.Command {
 		Use:    "agent",
 		Short:  "Run the node-local capture agent",
 		Hidden: true,
-		RunE: func(command *cobra.Command, _ []string) error {
+		RunE: func(command *cobra.Command, _ []string) (commandErr error) {
+			sessions := make([]namedCaptureSession, 0, len(targetValues))
+			defer func() {
+				commandErr = errors.Join(commandErr, closeCaptureSessions(sessions))
+			}()
 			targets := make([]kube.AgentTarget, 0, len(targetValues))
 			for _, value := range targetValues {
 				var target kube.AgentTarget
@@ -62,32 +67,54 @@ func newAgentCommand() *cobra.Command {
 					CaptureConnect: captureConnect, RouteTo: routeTo, FlowAddresses: flowValues,
 				})
 			}
+			var resolver *agent.TargetResolver
+			var podUIDs []string
+			if iface == "" {
+				for _, target := range targets {
+					if target.RouteTo == "" && target.PodUID != "" {
+						podUIDs = append(podUIDs, target.PodUID)
+					}
+				}
+			}
+			if len(podUIDs) > 0 {
+				createdResolver, err := agent.NewTargetResolver(procRoot, cgroupRoot, podUIDs)
+				if err != nil {
+					return fmt.Errorf("index target Pod processes: %w", err)
+				}
+				resolver = createdResolver
+			}
 
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			strategies := agent.NewCaptureStrategies()
-			sessions := make([]namedCaptureSession, 0, len(targets))
 			for _, target := range targets {
 				resolved, err := resolveAgentTarget(
-					target, iface, explicitCgroupIDs, procRoot, cgroupRoot, sessionID, node,
+					target, iface, explicitCgroupIDs, sessionID, node, resolver,
 				)
 				if err != nil {
-					closeCaptureSessions(sessions)
 					return fmt.Errorf("%s: %w", target.AttachmentID, err)
 				}
 				session, err := strategies.Open(ctx, resolved)
 				if err != nil {
-					closeCaptureSessions(sessions)
 					return fmt.Errorf("%s: %w", target.AttachmentID, err)
 				}
 				sessions = append(sessions, namedCaptureSession{name: target.AttachmentID, session: session})
 			}
-			defer closeCaptureSessions(sessions)
 
-			events, errors := mergeCaptureSessions(ctx, sessions)
+			events, streamErrors := mergeCaptureSessions(ctx, sessions)
 			encoder := json.NewEncoder(command.OutOrStdout())
-			for events != nil || errors != nil {
+			ctxDone := ctx.Done()
+			var closing <-chan error
+			var captureErr error
+			for events != nil || streamErrors != nil || closing != nil {
 				select {
+				case <-ctxDone:
+					ctxDone = nil
+					result := make(chan error, 1)
+					closing = result
+					go func() {
+						result <- closeCaptureSessions(sessions)
+					}()
 				case observation, ok := <-events:
 					if !ok {
 						events = nil
@@ -96,19 +123,21 @@ func newAgentCommand() *cobra.Command {
 					if err := encoder.Encode(observation); err != nil {
 						return fmt.Errorf("encode observation: %w", err)
 					}
-				case err, ok := <-errors:
+				case err, ok := <-streamErrors:
 					if !ok {
-						errors = nil
+						streamErrors = nil
 						continue
 					}
 					if err != nil {
-						return err
+						captureErr = errors.Join(captureErr, err)
+						stop()
 					}
-				case <-ctx.Done():
-					return nil
+				case err := <-closing:
+					captureErr = errors.Join(captureErr, err)
+					closing = nil
 				}
 			}
-			return nil
+			return captureErr
 		},
 	}
 	command.Flags().StringVar(&iface, "iface", "", "host interface to observe")
@@ -136,7 +165,8 @@ func resolveAgentTarget(
 	spec kube.AgentTarget,
 	explicitInterface string,
 	explicitCgroupIDs []uint64,
-	procRoot, cgroupRoot, sessionID, node string,
+	sessionID, node string,
+	resolver *agent.TargetResolver,
 ) (capture.Target, error) {
 	target := capture.Target{
 		CaptureConnect: spec.CaptureConnect,
@@ -170,7 +200,10 @@ func resolveAgentTarget(
 		target.Interface = explicitInterface
 		target.CgroupIDs = append([]uint64(nil), explicitCgroupIDs...)
 	case spec.PodUID != "":
-		resolved, err := agent.TargetForPodUID(procRoot, cgroupRoot, spec.PodUID)
+		if resolver == nil {
+			return capture.Target{}, fmt.Errorf("target Pod process index is unavailable")
+		}
+		resolved, err := resolver.TargetForPodUID(spec.PodUID)
 		if err != nil {
 			return capture.Target{}, fmt.Errorf("resolve target interface: %w", err)
 		}
@@ -183,41 +216,39 @@ func resolveAgentTarget(
 }
 
 func mergeCaptureSessions(
-	ctx context.Context,
+	_ context.Context,
 	sessions []namedCaptureSession,
 ) (<-chan model.Observation, <-chan error) {
 	events := make(chan model.Observation, 1024)
-	errors := make(chan error, 1)
+	streamErrors := make(chan error, len(sessions))
 	var wait sync.WaitGroup
 	for _, current := range sessions {
 		wait.Add(1)
 		go func(current namedCaptureSession) {
 			defer wait.Done()
 			for observation := range current.session.Events() {
-				select {
-				case events <- observation:
-				case <-ctx.Done():
-					return
-				}
+				events <- observation
 			}
 			if err := <-current.session.Errors(); err != nil {
-				select {
-				case errors <- fmt.Errorf("%s capture: %w", current.name, err):
-				default:
-				}
+				streamErrors <- fmt.Errorf("%s capture: %w", current.name, err)
 			}
 		}(current)
 	}
 	go func() {
 		wait.Wait()
 		close(events)
-		close(errors)
+		close(streamErrors)
 	}()
-	return events, errors
+	return events, streamErrors
 }
 
-func closeCaptureSessions(sessions []namedCaptureSession) {
-	for _, current := range sessions {
-		_ = current.session.Close()
+func closeCaptureSessions(sessions []namedCaptureSession) error {
+	var errs []error
+	for i := len(sessions) - 1; i >= 0; i-- {
+		current := sessions[i]
+		if err := current.session.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("%s close capture: %w", current.name, err))
+		}
 	}
+	return errors.Join(errs...)
 }

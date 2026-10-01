@@ -40,6 +40,7 @@ type DatapathView struct {
 	DestinationBoundary EvidencePoint
 	TransitLabel        string
 	CrossNode           bool
+	CaptureComplete     bool
 	Diagnosis           string
 	Policies            []model.PolicyContext
 }
@@ -53,6 +54,7 @@ type Analyzer struct {
 	active              *attempt
 	ready               map[string]model.Observation
 	attachments         map[string]model.Observation
+	finalStatuses       map[string]model.Observation
 	lost                map[string]uint64
 	transportLost       map[string]uint64
 	packets             map[string]int
@@ -71,6 +73,7 @@ func NewAnalyzer() *Analyzer {
 		pendingResponse: make(map[attemptKey]model.Observation),
 		ready:           make(map[string]model.Observation),
 		attachments:     make(map[string]model.Observation),
+		finalStatuses:   make(map[string]model.Observation),
 		lost:            make(map[string]uint64),
 		transportLost:   make(map[string]uint64),
 		packets:         make(map[string]int),
@@ -126,6 +129,9 @@ func (a *Analyzer) Observe(observation model.Observation) {
 		if observation.AttachmentID != "" {
 			a.ready[observation.Side] = observation
 			a.attachments[observation.AttachmentID] = observation
+			if observation.Final {
+				a.finalStatuses[observation.AttachmentID] = observation
+			}
 		}
 	case model.KindConnect:
 		if observation.Side == "source" && observation.DstPort == 53 {
@@ -562,6 +568,16 @@ func (a *Analyzer) Datapath() *DatapathView {
 	}
 	view.CrossNode = view.SourceNode != "" && view.DestinationNode != "" &&
 		view.SourceNode != view.DestinationNode
+	sides := []string{"source", "backend"}
+	if dnsFocus != nil {
+		sides = []string{"source", "dns"}
+	} else if a.mode() == model.TraceModePod {
+		sides = []string{"source", "destination"}
+	}
+	if view.CrossNode {
+		sides = append(sides, "transit-source", "transit-destination")
+	}
+	view.CaptureComplete = a.captureCompleteForSides(sides...)
 	if view.CrossNode && a.context.NodeTransit != nil {
 		transit := a.Transit()
 		sourceTransit := transitPoint(transit, view.SourceNode, "transit-source", view.DestinationNode)
@@ -583,6 +599,17 @@ func (a *Analyzer) Datapath() *DatapathView {
 	}
 	view.Policies = a.diagramPolicies(view.Destination)
 	view.Diagnosis = diagnoseDatapath(*view, a.mode(), dnsFocus != nil)
+	if view.CaptureComplete && !strings.Contains(view.Diagnosis, "incomplete") {
+		switch {
+		case view.DestinationBoundary.State == "OBSERVED":
+			view.Diagnosis += " Capture complete through final watermarks."
+		case view.SourceBoundary.State == "OBSERVED":
+			view.Diagnosis = "Capture complete through final watermarks. " +
+				view.Diagnosis + " This is an evidence gap, not a drop verdict."
+		default:
+			view.Diagnosis = "Capture complete through final watermarks; no matching evidence was observed at the selected datapath boundaries."
+		}
+	}
 	return view
 }
 
@@ -731,6 +758,15 @@ func diagnoseDatapath(view DatapathView, mode model.TraceMode, dnsFocus bool) st
 			evidence,
 		)
 	}
+	if view.CaptureComplete {
+		if view.SourceBoundary.State == "OBSERVED" {
+			return fmt.Sprintf(
+				"Capture complete through final watermarks: %s was observed at the source boundary, but no matching evidence reached the destination boundary (not a drop verdict).",
+				evidence,
+			)
+		}
+		return "Capture complete through final watermarks; no matching evidence was observed at the selected datapath boundaries."
+	}
 	return "Waiting for enough matching evidence to localize the path."
 }
 
@@ -821,10 +857,19 @@ func (a *Analyzer) Conclusion() string {
 		case sourceObserved && destinationObserved:
 			return "Correlated traffic observed at both selected Pod boundaries"
 		case sourceObserved:
+			if a.sideCaptureComplete("source") && a.sideCaptureComplete("destination") {
+				return "Capture complete; source traffic was observed without matching destination evidence (not a drop verdict)"
+			}
 			return "Traffic observed at the source boundary; waiting for matching destination-boundary evidence"
 		case destinationObserved:
+			if a.sideCaptureComplete("source") && a.sideCaptureComplete("destination") {
+				return "Capture complete; destination traffic was observed without matching source evidence (not a drop verdict)"
+			}
 			return "Traffic observed at the destination boundary; waiting for matching source-boundary evidence"
 		default:
+			if a.sideCaptureComplete("source") && a.sideCaptureComplete("destination") {
+				return "Capture complete; no matching traffic was observed at the selected Pod boundaries"
+			}
 			return "Waiting for traffic between the selected Pod boundaries"
 		}
 	}
@@ -836,6 +881,9 @@ func (a *Analyzer) Conclusion() string {
 		if a.lost["source"] > 0 || a.lost["backend"] > 0 ||
 			a.transportLost["source"] > 0 || a.transportLost["backend"] > 0 {
 			return "Trace incomplete: event loss prevents interpreting the missing backend SYN"
+		}
+		if a.sideCaptureComplete("source") && a.sideCaptureComplete("backend") {
+			return "Capture complete through final watermarks; no matching backend SYN was observed (not a drop verdict)"
 		}
 		if len(a.active.sourceSYNs) > 1 {
 			return fmt.Sprintf(
@@ -859,6 +907,31 @@ func (a *Analyzer) Conclusion() string {
 	default:
 		return "Observed tuples do not yet prove a Service translation location"
 	}
+
+}
+
+func (a *Analyzer) sideCaptureComplete(side string) bool {
+	found := false
+	for attachmentID, status := range a.attachments {
+		if status.Side != side {
+			continue
+		}
+		found = true
+		final, ok := a.finalStatuses[attachmentID]
+		if !ok || !final.Complete {
+			return false
+		}
+	}
+	return found
+}
+
+func (a *Analyzer) captureCompleteForSides(sides ...string) bool {
+	for _, side := range sides {
+		if !a.sideCaptureComplete(side) {
+			return false
+		}
+	}
+	return true
 }
 
 type Health struct {
@@ -1004,8 +1077,8 @@ func (a *Analyzer) Health() []Health {
 		}
 	}
 	return []Health{
-		health("source/application", intent, source, "connect intent"),
-		health("source/boundary", sourceBoundary, source, "matching initial SYN"),
+		a.healthWithLoss("source/application", intent, source, "connect intent", "source"),
+		a.healthWithLoss("source/boundary", sourceBoundary, source, "matching initial SYN", "source"),
 		backendHealth,
 		a.healthWithLoss("response", response, source, "packet from backend to source", "source"),
 	}
@@ -1038,6 +1111,17 @@ func (a *Analyzer) mode() model.TraceMode {
 
 func (a *Analyzer) healthWithLoss(name string, observed bool, ready model.Observation, evidence, side string) Health {
 	result := health(name, observed, ready, evidence)
+	if ready.Final {
+		if !ready.Complete {
+			result.State = "INCOMPLETE"
+			result.Detail = "final capture watermark incomplete; terminal evidence may be missing"
+			if observed {
+				result.Detail = evidence + " observed; " + result.Detail
+			}
+			return result
+		}
+		result.Detail = fmt.Sprintf("%s; complete through sequence %d", result.Detail, ready.Sequence)
+	}
 	if !observed && (a.lost[side] > 0 || a.transportLost[side] > 0) {
 		result.State = "INCOMPLETE"
 		result.Detail = fmt.Sprintf(

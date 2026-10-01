@@ -3,7 +3,10 @@ package kube
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,8 +23,14 @@ type AgentStream struct {
 	Errors       <-chan error
 	AttachmentID string
 	Side         string
-	close        func()
+	close        func() error
+	done         <-chan struct{}
+	cancel       context.CancelFunc
+	closeOnce    sync.Once
+	closeErr     error
 }
+
+const agentShutdownTimeout = 10 * time.Second
 
 type sequenceState struct {
 	sequence      uint64
@@ -59,10 +68,28 @@ func (t sequenceTracker) annotate(observation model.Observation) model.Observati
 	return observation
 }
 
-func (s *AgentStream) Close() {
-	if s.close != nil {
-		s.close()
-	}
+func (s *AgentStream) Close() error {
+	s.closeOnce.Do(func() {
+		if s.close != nil {
+			s.closeErr = s.close()
+		}
+		if s.done != nil {
+			timer := time.NewTimer(agentShutdownTimeout)
+			defer timer.Stop()
+			select {
+			case <-s.done:
+			case <-timer.C:
+				s.closeErr = errors.Join(s.closeErr, fmt.Errorf(
+					"agent log stream did not finish within %s; final capture status may be missing",
+					agentShutdownTimeout,
+				))
+			}
+		}
+		if s.cancel != nil {
+			s.cancel()
+		}
+	})
+	return s.closeErr
 }
 
 func (c *Client) StartAgent(ctx context.Context, options AgentOptions, index *enrich.Index) (*AgentStream, error) {
@@ -71,43 +98,57 @@ func (c *Client) StartAgent(ctx context.Context, options AgentOptions, index *en
 		return nil, fmt.Errorf("create agent Pod: %w", err)
 	}
 	cleanupOnce := sync.Once{}
-	cleanup := func() {
-		// Agent Pods are disposable; delete immediately and guard every cleanup path.
+	var cleanupErr error
+	cleanup := func() error {
 		cleanupOnce.Do(func() {
-			grace := int64(0)
-			_ = c.Clientset.CoreV1().Pods(options.Namespace).Delete(context.Background(), created.Name, metav1.DeleteOptions{
+			grace := int64(5)
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			err := c.Clientset.CoreV1().Pods(options.Namespace).Delete(cleanupCtx, created.Name, metav1.DeleteOptions{
 				GracePeriodSeconds: &grace,
 			})
+			if err != nil && !apierrors.IsNotFound(err) {
+				cleanupErr = fmt.Errorf("delete agent Pod %s: %w", created.Name, err)
+			}
 		})
+		return cleanupErr
 	}
 	if err := c.waitForAgent(ctx, options.Namespace, created.Name); err != nil {
-		cleanup()
-		return nil, err
+		return nil, errors.Join(err, cleanup())
 	}
 
+	streamCtx, cancelStream := context.WithCancel(context.Background())
 	logs, err := c.Clientset.CoreV1().Pods(options.Namespace).GetLogs(created.Name, &corev1.PodLogOptions{
 		Container: "agent",
 		Follow:    true,
-	}).Stream(ctx)
+	}).Stream(streamCtx)
 	if err != nil {
-		cleanup()
-		return nil, fmt.Errorf("stream agent logs: %w", err)
+		cancelStream()
+		return nil, errors.Join(fmt.Errorf("stream agent logs: %w", err), cleanup())
 	}
 
 	observations := make(chan model.Observation, 1024)
-	errors := make(chan error, 1)
+	streamErrors := make(chan error, 1)
+	done := make(chan struct{})
+	expectedSides := expectedAttachmentSides(options)
+	expected := sortedAttachmentIDs(expectedSides)
 	go func() {
+		defer close(done)
 		defer close(observations)
-		defer close(errors)
-		defer logs.Close()
+		defer close(streamErrors)
 		scanner := bufio.NewScanner(logs)
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 		sequences := make(sequenceTracker)
+		finalStatuses := make(map[string]bool, len(expected))
+		var streamErr error
 		for scanner.Scan() {
 			observation, err := model.Decode(scanner.Bytes())
 			if err != nil {
-				errors <- fmt.Errorf("decode agent %s output %q: %w", created.Name, scanner.Text(), err)
-				return
+				streamErr = fmt.Errorf("decode agent %s output %q: %w", created.Name, scanner.Text(), err)
+				break
+			}
+			if observation.Final {
+				finalStatuses[observation.AttachmentID] = observation.Complete
 			}
 			observation = sequences.annotate(observation)
 			if index != nil {
@@ -115,22 +156,111 @@ func (c *Client) StartAgent(ctx context.Context, options AgentOptions, index *en
 			}
 			select {
 			case observations <- observation:
-			case <-ctx.Done():
-				return
+			case <-streamCtx.Done():
+				break
+			}
+			if streamCtx.Err() != nil {
+				break
 			}
 		}
-		if err := scanner.Err(); err != nil && ctx.Err() == nil {
-			errors <- fmt.Errorf("read agent %s output: %w", created.Name, err)
+		if err := scanner.Err(); err != nil && streamCtx.Err() == nil {
+			streamErr = errors.Join(streamErr, fmt.Errorf("read agent %s output: %w", created.Name, err))
+		}
+		if streamCtx.Err() == nil {
+			if missing := missingFinalStatuses(expected, finalStatuses); len(missing) > 0 {
+			sendMissing:
+				for _, attachment := range missing {
+					observation := model.Observation{
+						SchemaVersion: model.SchemaVersion,
+						Kind:          model.KindStatus,
+						SessionID:     options.SessionID,
+						AttachmentID:  attachment,
+						Side:          expectedSides[attachment],
+						Node:          options.Node,
+						WallTime:      time.Now(),
+						Final:         true,
+						Complete:      false,
+						Message:       "agent log stream ended without a final capture status",
+					}
+					if index != nil {
+						observation = index.Apply(observation)
+					}
+					select {
+					case observations <- observation:
+					case <-streamCtx.Done():
+						break sendMissing
+					}
+				}
+				streamErr = errors.Join(streamErr, fmt.Errorf(
+					"agent %s ended without final capture status for attachments: %s",
+					created.Name, strings.Join(missing, ", "),
+				))
+			} else if incomplete := incompleteFinalStatuses(expected, finalStatuses); len(incomplete) > 0 {
+				streamErr = errors.Join(streamErr, fmt.Errorf(
+					"agent %s reported incomplete final capture status for attachments: %s",
+					created.Name, strings.Join(incomplete, ", "),
+				))
+			}
+		}
+		if err := logs.Close(); err != nil && streamCtx.Err() == nil {
+			streamErr = errors.Join(streamErr, fmt.Errorf("close agent %s log stream: %w", created.Name, err))
+		}
+		if streamErr != nil {
+			streamErrors <- streamErr
 		}
 	}()
 
 	return &AgentStream{
 		Observations: observations,
-		Errors:       errors,
+		Errors:       streamErrors,
 		AttachmentID: options.AttachmentID,
 		Side:         options.Side,
 		close:        cleanup,
+		done:         done,
+		cancel:       cancelStream,
 	}, nil
+}
+
+func expectedAttachmentSides(options AgentOptions) map[string]string {
+	sides := make(map[string]string)
+	for _, target := range options.Targets {
+		if target.AttachmentID != "" {
+			sides[target.AttachmentID] = target.Side
+		}
+	}
+	if len(sides) == 0 && options.AttachmentID != "" {
+		sides[options.AttachmentID] = options.Side
+	}
+	return sides
+}
+
+func sortedAttachmentIDs(sides map[string]string) []string {
+	attachments := make([]string, 0, len(sides))
+	for attachment := range sides {
+		attachments = append(attachments, attachment)
+	}
+	sort.Strings(attachments)
+	return attachments
+}
+
+func missingFinalStatuses(expected []string, statuses map[string]bool) []string {
+	var missing []string
+	for _, attachment := range expected {
+		if _, ok := statuses[attachment]; !ok {
+			missing = append(missing, attachment)
+		}
+	}
+	return missing
+}
+
+func incompleteFinalStatuses(expected []string, statuses map[string]bool) []string {
+	var incomplete []string
+	for _, attachment := range expected {
+		if complete, ok := statuses[attachment]; ok && !complete {
+			incomplete = append(incomplete, attachment)
+		}
+	}
+	return incomplete
 }
 
 func (c *Client) waitForAgent(ctx context.Context, namespace, name string) error {

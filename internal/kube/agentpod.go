@@ -38,6 +38,7 @@ func AgentPod(options AgentOptions) *corev1.Pod {
 	readOnlyRoot := true
 	runAsUser := int64(0)
 	deadline := int64((30 * time.Minute).Seconds())
+	terminationGracePeriod := int64(5)
 	args := []string{
 		"agent",
 		"--session-id", options.SessionID,
@@ -81,13 +82,14 @@ func AgentPod(options AgentOptions) *corev1.Pod {
 			},
 		},
 		Spec: corev1.PodSpec{
-			NodeName:                     options.Node,
-			RestartPolicy:                corev1.RestartPolicyNever,
-			HostNetwork:                  true,
-			HostPID:                      true,
-			AutomountServiceAccountToken: &automount,
-			ActiveDeadlineSeconds:        &deadline,
-			DNSPolicy:                    corev1.DNSClusterFirstWithHostNet,
+			NodeName:                      options.Node,
+			TerminationGracePeriodSeconds: &terminationGracePeriod,
+			RestartPolicy:                 corev1.RestartPolicyNever,
+			HostNetwork:                   true,
+			HostPID:                       true,
+			AutomountServiceAccountToken:  &automount,
+			ActiveDeadlineSeconds:         &deadline,
+			DNSPolicy:                     corev1.DNSClusterFirstWithHostNet,
 			Tolerations: []corev1.Toleration{
 				{Operator: corev1.TolerationOpExists},
 			},

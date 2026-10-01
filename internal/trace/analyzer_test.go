@@ -439,6 +439,46 @@ func TestAnalyzerDoesNotInterpretGapWhenTransportEventsWereLost(t *testing.T) {
 	}
 }
 
+func TestAnalyzerUsesFinalWatermarksToCloseEvidenceWindow(t *testing.T) {
+	analyzer := NewAnalyzer()
+	context := testContext()
+	analyzer.Observe(model.Observation{Kind: model.KindTraceContext, Trace: &context})
+	for _, status := range []model.Observation{
+		{Kind: model.KindStatus, Side: "source", AttachmentID: "source", Interface: "veth-source"},
+		{Kind: model.KindStatus, Side: "backend", AttachmentID: "backend-1", Interface: "veth-backend"},
+		{Kind: model.KindStatus, Side: "source", AttachmentID: "source", Interface: "veth-source", Final: true, Complete: true, Sequence: 3},
+		{Kind: model.KindStatus, Side: "backend", AttachmentID: "backend-1", Interface: "veth-backend", Final: true, Complete: true, Sequence: 5},
+	} {
+		analyzer.Observe(status)
+	}
+	analyzer.Observe(model.Observation{
+		Kind: model.KindPacket, Side: "source", WallTime: time.Now(),
+		Protocol: 6, SrcAddr: context.Source.Address, DstAddr: context.Backends[0].Address,
+		SrcPort: 1234, DstPort: context.Backends[0].Port, TCPFlags: 0x02, TCPSequence: 100,
+	})
+	if got := analyzer.Conclusion(); !strings.Contains(got, "Capture complete through final watermarks") {
+		t.Fatalf("conclusion = %q", got)
+	}
+	if datapath := analyzer.Datapath(); datapath == nil || !datapath.CaptureComplete ||
+		!strings.Contains(datapath.Diagnosis, "Capture complete through final watermarks") {
+		t.Fatalf("datapath diagnosis = %#v", datapath)
+	}
+}
+
+func TestAnalyzerMarksIncompleteFinalWatermarkInHealth(t *testing.T) {
+	analyzer := NewAnalyzer()
+	context := testContext()
+	analyzer.Observe(model.Observation{Kind: model.KindTraceContext, Trace: &context})
+	analyzer.Observe(model.Observation{
+		Kind: model.KindStatus, Side: "backend", AttachmentID: "backend-1",
+		Interface: "veth-backend", Final: true, Complete: false,
+	})
+	if health := analyzer.Health()[2]; health.State != "INCOMPLETE" ||
+		!strings.Contains(health.Detail, "final capture watermark incomplete") {
+		t.Fatalf("backend health = %#v", health)
+	}
+}
+
 func TestAnalyzerSeparatesCurrentAndPreviousAttempts(t *testing.T) {
 	analyzer := NewAnalyzer()
 	context := testContext()

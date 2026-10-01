@@ -94,7 +94,7 @@ func consume(command *cobra.Command, ctx context.Context, title string, observat
 
 func mergeStreams(ctx context.Context, streams ...*kube.AgentStream) (<-chan model.Observation, <-chan error) {
 	observations := make(chan model.Observation, 1024)
-	errors := make(chan error, 1)
+	streamErrors := make(chan error, len(streams))
 	var wait sync.WaitGroup
 	for _, stream := range streams {
 		wait.Add(1)
@@ -108,17 +108,14 @@ func mergeStreams(ctx context.Context, streams ...*kube.AgentStream) (<-chan mod
 				}
 			}
 			if err := <-stream.Errors; err != nil {
-				select {
-				case errors <- fmt.Errorf("%s attachment %s: %w", stream.Side, stream.AttachmentID, err):
-				default:
-				}
+				streamErrors <- fmt.Errorf("%s attachment %s: %w", stream.Side, stream.AttachmentID, err)
 			}
 		}(stream)
 	}
 	go func() {
 		wait.Wait()
 		close(observations)
-		close(errors)
+		close(streamErrors)
 	}()
-	return observations, errors
+	return observations, streamErrors
 }

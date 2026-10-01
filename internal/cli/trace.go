@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"sort"
@@ -84,7 +85,7 @@ func runPodPathTrace(
 	client *kube.Client,
 	source, destination *corev1.Pod,
 	options *traceOptions,
-) error {
+) (traceErr error) {
 	if source.Namespace == destination.Namespace && source.Name == destination.Name {
 		return fmt.Errorf("source and destination Pods must be different")
 	}
@@ -115,12 +116,9 @@ func runPodPathTrace(
 	if err != nil {
 		return err
 	}
-	closeStreams := func() {
-		for _, stream := range streams {
-			stream.Close()
-		}
-	}
-	defer closeStreams()
+	defer func() {
+		traceErr = errors.Join(traceErr, closeAgentStreams(streams))
+	}()
 	observations, errors := mergeStreams(ctx, streams...)
 	observations = filterPodPathObservations(ctx, traceContext, observations)
 	observations = prependTraceContext(ctx, sessionID, traceContext, observations)
@@ -168,7 +166,7 @@ func runServiceTrace(
 	serviceTrace *kube.ServiceTrace,
 	options *traceOptions,
 	maxBackends int,
-) error {
+) (traceErr error) {
 	serviceTrace.Context.Mode = model.TraceModeService
 	if maxBackends < 0 {
 		return fmt.Errorf("--max-backends cannot be negative")
@@ -251,12 +249,9 @@ func runServiceTrace(
 	if err != nil {
 		return err
 	}
-	closeStreams := func() {
-		for _, stream := range streams {
-			stream.Close()
-		}
-	}
-	defer closeStreams()
+	defer func() {
+		traceErr = errors.Join(traceErr, closeAgentStreams(streams))
+	}()
 	streams = append(streams, startPolicyContextStream(
 		command, ctx, client, sessionID, serviceTrace.Context, source, backends,
 	))
@@ -515,14 +510,24 @@ func startNodeAgents(
 			Side:            "node",
 		}, index)
 		if err != nil {
-			for _, started := range streams {
-				started.Close()
-			}
-			return nil, fmt.Errorf("start node agent %s: %w", node, err)
+			return nil, errors.Join(
+				fmt.Errorf("start node agent %s: %w", node, err),
+				closeAgentStreams(streams),
+			)
 		}
 		streams = append(streams, stream)
 	}
 	return streams, nil
+}
+
+func closeAgentStreams(streams []*kube.AgentStream) error {
+	var errs []error
+	for index := len(streams) - 1; index >= 0; index-- {
+		if err := streams[index].Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func planTransitPair(

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -38,37 +39,8 @@ func (Strategy) Open(ctx context.Context, target capture.Target) (capture.Sessio
 	if err := loadBpfObjects(&objects, nil); err != nil {
 		return nil, fmt.Errorf("load BPF objects: %w", err)
 	}
-	if target.CaptureConnect && len(target.CgroupIDs) == 0 {
-		objects.Close()
-		return nil, fmt.Errorf("connect capture requires at least one target cgroup")
-	}
-	enabled := uint8(1)
-	for _, cgroupID := range target.CgroupIDs {
-		if err := objects.TargetCgroups.Update(&cgroupID, &enabled, ebpf.UpdateAny); err != nil {
-			objects.Close()
-			return nil, fmt.Errorf("configure target cgroup %d: %w", cgroupID, err)
-		}
-	}
-	if len(target.FlowAddresses) > 0 {
-		for _, address := range target.FlowAddresses {
-			key := addressKey(address)
-			if err := objects.FlowAddresses.Update(&key, &enabled, ebpf.UpdateAny); err != nil {
-				objects.Close()
-				return nil, fmt.Errorf("configure flow address %s: %w", address, err)
-			}
-		}
-	}
-	if target.Transit || len(target.FlowAddresses) > 0 {
-		zero := uint32(0)
-		mode := uint8(2)
-		// Transit takes precedence when a target also carries Pod flow filters.
-		if target.Transit {
-			mode = 1
-		}
-		if err := objects.CaptureModes.Update(&zero, &mode, ebpf.UpdateAny); err != nil {
-			objects.Close()
-			return nil, fmt.Errorf("configure capture mode: %w", err)
-		}
+	if err := configureCaptureObjects(&objects, target); err != nil {
+		return nil, openError(err, nil, &objects)
 	}
 	egress, err := link.AttachTCX(link.TCXOptions{
 		Interface: iface.Index,
@@ -77,8 +49,7 @@ func (Strategy) Open(ctx context.Context, target capture.Target) (capture.Sessio
 		Anchor:    link.Head(),
 	})
 	if err != nil {
-		objects.Close()
-		return nil, fmt.Errorf("attach TCX egress: %w", err)
+		return nil, openError(fmt.Errorf("attach TCX egress: %w", err), nil, &objects)
 	}
 	ingress, err := link.AttachTCX(link.TCXOptions{
 		Interface: iface.Index,
@@ -87,28 +58,19 @@ func (Strategy) Open(ctx context.Context, target capture.Target) (capture.Sessio
 		Anchor:    link.Head(),
 	})
 	if err != nil {
-		egress.Close()
-		objects.Close()
-		return nil, fmt.Errorf("attach TCX ingress: %w", err)
+		return nil, openError(fmt.Errorf("attach TCX ingress: %w", err), []io.Closer{egress}, &objects)
 	}
 	links := []link.Link{ingress, egress}
 	if target.CaptureConnect {
 		connect, err := link.AttachTracing(link.TracingOptions{Program: objects.ObserveConnect})
 		if err != nil {
-			ingress.Close()
-			egress.Close()
-			objects.Close()
-			return nil, fmt.Errorf("attach connect fentry: %w", err)
+			return nil, openError(fmt.Errorf("attach connect fentry: %w", err), linksToClosers(links), &objects)
 		}
 		links = append(links, connect)
 	}
 	reader, err := ringbuf.NewReader(objects.Events)
 	if err != nil {
-		for _, attached := range links {
-			attached.Close()
-		}
-		objects.Close()
-		return nil, fmt.Errorf("open ring buffer: %w", err)
+		return nil, openError(fmt.Errorf("open ring buffer: %w", err), linksToClosers(links), &objects)
 	}
 
 	session := &session{
@@ -122,23 +84,62 @@ func (Strategy) Open(ctx context.Context, target capture.Target) (capture.Sessio
 		packetPoint:  "host-veth/tcx",
 		transitPoint: "node-transit/tcx",
 		hookEvidence: "TCX hook",
+		done:         make(chan struct{}),
 	}
 	go session.run(ctx)
 	return session, nil
 }
 
+func configureCaptureObjects(objects *bpfObjects, target capture.Target) error {
+	if target.CaptureConnect && len(target.CgroupIDs) == 0 {
+		return fmt.Errorf("connect capture requires at least one target cgroup")
+	}
+	enabled := uint8(1)
+	for _, cgroupID := range target.CgroupIDs {
+		if err := objects.TargetCgroups.Update(&cgroupID, &enabled, ebpf.UpdateAny); err != nil {
+			return fmt.Errorf("configure target cgroup %d: %w", cgroupID, err)
+		}
+	}
+	for _, address := range target.FlowAddresses {
+		key := addressKey(address)
+		if err := objects.FlowAddresses.Update(&key, &enabled, ebpf.UpdateAny); err != nil {
+			return fmt.Errorf("configure flow address %s: %w", address, err)
+		}
+	}
+	if target.Transit || len(target.FlowAddresses) > 0 {
+		zero := uint32(0)
+		mode := uint8(2)
+		if target.Transit {
+			mode = 1
+		}
+		if err := objects.CaptureModes.Update(&zero, &mode, ebpf.UpdateAny); err != nil {
+			return fmt.Errorf("configure capture mode: %w", err)
+		}
+	}
+	return nil
+}
+
+func openError(cause error, attachments []io.Closer, objects *bpfObjects) error {
+	return errors.Join(cause, closeAttachments(attachments), objects.Close())
+}
+
 type session struct {
-	target       capture.Target
-	objects      bpfObjects
-	attachments  []io.Closer
-	reader       *ringbuf.Reader
-	events       chan model.Observation
-	errors       chan error
-	once         sync.Once
-	packetHooks  []string
-	packetPoint  string
-	transitPoint string
-	hookEvidence string
+	target        capture.Target
+	objects       bpfObjects
+	attachments   []io.Closer
+	reader        *ringbuf.Reader
+	events        chan model.Observation
+	errors        chan error
+	once          sync.Once
+	closeErrMu    sync.Mutex
+	done          chan struct{}
+	runErr        error
+	attachmentErr error
+	closeErr      error
+	packetHooks   []string
+	packetPoint   string
+	transitPoint  string
+	hookEvidence  string
 }
 
 func (s *session) Events() <-chan model.Observation { return s.events }
@@ -148,20 +149,31 @@ func (s *session) run(ctx context.Context) {
 	// Stop loss reporting before closing outputs; closing the reader below unblocks a pending Read.
 	reporterDone := make(chan struct{})
 	var reporter sync.WaitGroup
+	reporterErrors := make(chan error, 1)
 	reporter.Add(1)
 	go func() {
 		defer reporter.Done()
-		s.reportLoss(ctx, reporterDone)
+		reporterErrors <- s.reportLoss(ctx, reporterDone)
 	}()
 	defer func() {
 		close(reporterDone)
 		reporter.Wait()
+		s.runErr = errors.Join(s.runErr, <-reporterErrors)
+		s.attachmentErr = closeAttachments(s.attachments)
+		finalErr := s.finalStatus()
+		if err := errors.Join(s.runErr, s.attachmentErr, finalErr); err != nil {
+			s.errors <- err
+		}
 		close(s.events)
 		close(s.errors)
+		close(s.done)
 	}()
 	go func() {
-		<-ctx.Done()
-		s.reader.Close()
+		select {
+		case <-ctx.Done():
+			_ = s.reader.Close()
+		case <-s.done:
+		}
 	}()
 	// This offset is node-local; converted wall times must not order observations across nodes.
 	offset := time.Now().UnixNano() - monotonicNow()
@@ -193,13 +205,13 @@ func (s *session) run(ctx context.Context) {
 		record, err := s.reader.Read()
 		if err != nil {
 			if ctx.Err() == nil && err != ringbuf.ErrClosed {
-				s.errors <- fmt.Errorf("read ring buffer: %w", err)
+				s.runErr = fmt.Errorf("read ring buffer: %w", err)
 			}
 			return
 		}
 		var raw bpfEvent
 		if err := binary.Read(bytes.NewReader(record.RawSample), binary.NativeEndian, &raw); err != nil {
-			s.errors <- fmt.Errorf("decode BPF event: %w", err)
+			s.runErr = fmt.Errorf("decode BPF event: %w", err)
 			return
 		}
 		observation := observationFromRawWithHook(
@@ -214,25 +226,65 @@ func (s *session) run(ctx context.Context) {
 	}
 }
 
-func (s *session) reportLoss(ctx context.Context, done <-chan struct{}) {
+func (s *session) finalStatus() error {
+	zero := uint32(0)
+	var sequence, lost uint64
+	sequenceErr := s.objects.Sequences.Lookup(&zero, &sequence)
+	lostErr := s.objects.Losses.Lookup(&zero, &lost)
+	objectErr := s.objects.Close()
+	if objectErr != nil {
+		s.addCloseError(fmt.Errorf("close BPF objects: %w", objectErr))
+	}
+	complete := s.runErr == nil && s.attachmentErr == nil &&
+		sequenceErr == nil && lostErr == nil && objectErr == nil
+	observation := model.Observation{
+		SchemaVersion: model.SchemaVersion,
+		Kind:          model.KindStatus,
+		SessionID:     s.target.SessionID,
+		AttachmentID:  s.target.AttachID,
+		Side:          s.target.Side,
+		Node:          s.target.Node,
+		WallTime:      time.Now(),
+		Sequence:      sequence,
+		Lost:          lost,
+		Final:         true,
+		Complete:      complete,
+		Interface:     s.target.Interface,
+		InterfaceIdx:  s.target.InterfaceIndex,
+		Confidence:    model.ConfidenceExact,
+		Message:       "capture stopped; final sequence and loss counters reported",
+	}
+	if !complete {
+		observation.Message = "capture stopped with incomplete final counters or cleanup"
+	}
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	select {
+	case s.events <- observation:
+	case <-timer.C:
+		return errors.Join(
+			fmt.Errorf("emit final capture status: event queue remained blocked"),
+			sequenceErr, lostErr, s.closeError(),
+		)
+	}
+	return errors.Join(sequenceErr, lostErr, s.closeError())
+}
+
+func (s *session) reportLoss(ctx context.Context, done <-chan struct{}) error {
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	var reported uint64
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return nil
 		case <-done:
-			return
+			return nil
 		case <-ticker.C:
 			zero := uint32(0)
 			var lost uint64
 			if err := s.objects.Losses.Lookup(&zero, &lost); err != nil {
-				select {
-				case s.errors <- fmt.Errorf("read loss counter: %w", err):
-				default:
-				}
-				return
+				return fmt.Errorf("read loss counter: %w", err)
 			}
 			if lost == reported {
 				continue
@@ -260,9 +312,9 @@ func (s *session) reportLoss(ctx context.Context, done <-chan struct{}) {
 				Message:       fmt.Sprintf("event loss=%d", lost),
 			}:
 			case <-ctx.Done():
-				return
+				return nil
 			case <-done:
-				return
+				return nil
 			}
 		}
 	}
@@ -382,13 +434,24 @@ func monotonicNow() int64 {
 
 func (s *session) Close() error {
 	s.once.Do(func() {
-		s.reader.Close()
-		for _, attached := range s.attachments {
-			attached.Close()
+		if err := s.reader.Close(); err != nil && !errors.Is(err, ringbuf.ErrClosed) {
+			s.addCloseError(fmt.Errorf("close ring buffer reader: %w", err))
 		}
-		s.objects.Close()
+		<-s.done
 	})
-	return nil
+	return errors.Join(s.closeError(), s.attachmentErr)
+}
+
+func (s *session) addCloseError(err error) {
+	s.closeErrMu.Lock()
+	defer s.closeErrMu.Unlock()
+	s.closeErr = errors.Join(s.closeErr, err)
+}
+
+func (s *session) closeError() error {
+	s.closeErrMu.Lock()
+	defer s.closeErrMu.Unlock()
+	return s.closeErr
 }
 
 func linksToClosers(links []link.Link) []io.Closer {
@@ -397,4 +460,14 @@ func linksToClosers(links []link.Link) []io.Closer {
 		closers = append(closers, attached)
 	}
 	return closers
+}
+
+func closeAttachments(attachments []io.Closer) error {
+	var errs []error
+	for index := len(attachments) - 1; index >= 0; index-- {
+		if err := attachments[index].Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }

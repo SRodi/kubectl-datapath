@@ -21,6 +21,9 @@ func TestAgentPodHasUniqueCredentialFreeLifecycle(t *testing.T) {
 	if pod.Spec.AutomountServiceAccountToken == nil || *pod.Spec.AutomountServiceAccountToken {
 		t.Fatal("agent Pod must disable ServiceAccount token automount")
 	}
+	if pod.Spec.TerminationGracePeriodSeconds == nil || *pod.Spec.TerminationGracePeriodSeconds != 5 {
+		t.Fatal("agent Pod must allow graceful shutdown for final evidence")
+	}
 
 	if len(pod.Spec.Containers) != 1 || len(pod.Spec.Containers[0].Command) == 0 {
 		t.Fatal("agent must be the container main process")

@@ -16,19 +16,85 @@ type Target struct {
 	CgroupIDs []uint64
 }
 
+type TargetResolver struct {
+	procRoot   string
+	cgroupRoot string
+	pidsByUID  map[string][]int
+	targets    map[string]Target
+}
+
+func NewTargetResolver(procRoot, cgroupRoot string, podUIDs []string) (*TargetResolver, error) {
+	wanted := make(map[string]string, len(podUIDs)*2)
+	for _, podUID := range podUIDs {
+		if podUID == "" {
+			continue
+		}
+		wanted["pod"+podUID] = podUID
+		wanted["pod"+strings.ReplaceAll(podUID, "-", "_")] = podUID
+	}
+	entries, err := os.ReadDir(procRoot)
+	if err != nil {
+		return nil, fmt.Errorf("read proc root: %w", err)
+	}
+	pidsByUID := make(map[string][]int, len(podUIDs))
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+		file, err := os.Open(filepath.Join(procRoot, entry.Name(), "cgroup"))
+		if err != nil {
+			continue
+		}
+		matches := make(map[string]struct{})
+		scanner := bufio.NewScanner(file)
+		for scanner.Scan() {
+			line := scanner.Text()
+			for needle, podUID := range wanted {
+				if strings.Contains(line, needle) {
+					matches[podUID] = struct{}{}
+				}
+			}
+		}
+		scanErr := scanner.Err()
+		closeErr := file.Close()
+		if scanErr != nil || closeErr != nil {
+			continue
+		}
+		for podUID := range matches {
+			pidsByUID[podUID] = append(pidsByUID[podUID], pid)
+		}
+	}
+	return &TargetResolver{
+		procRoot: procRoot, cgroupRoot: cgroupRoot,
+		pidsByUID: pidsByUID, targets: make(map[string]Target, len(podUIDs)),
+	}, nil
+}
+
 func TargetForPodUID(procRoot, cgroupRoot, podUID string) (Target, error) {
-	// Resolve the host veth through one Pod process, but collect every matching cgroup for connect capture.
-	pids, err := findPodPIDs(procRoot, podUID)
+	resolver, err := NewTargetResolver(procRoot, cgroupRoot, []string{podUID})
 	if err != nil {
 		return Target{}, err
 	}
+	return resolver.TargetForPodUID(podUID)
+}
+
+func (r *TargetResolver) TargetForPodUID(podUID string) (Target, error) {
+	if target, ok := r.targets[podUID]; ok {
+		return target, nil
+	}
+	pids := r.pidsByUID[podUID]
+	if len(pids) == 0 {
+		return Target{}, fmt.Errorf("no process found for Pod UID %s", podUID)
+	}
+	// Resolve the host veth through one Pod process, but collect every matching cgroup.
 	pid := pids[0]
-	podInterface, err := podPrimaryInterface(procRoot, pid)
+	podInterface, err := podPrimaryInterface(r.procRoot, pid)
 	if err != nil {
 		return Target{}, err
 	}
 	iflinkPath := filepath.Join(
-		procRoot, strconv.Itoa(pid), "root", "sys", "class", "net", podInterface, "iflink",
+		r.procRoot, strconv.Itoa(pid), "root", "sys", "class", "net", podInterface, "iflink",
 	)
 	data, err := os.ReadFile(iflinkPath)
 	if err != nil {
@@ -44,11 +110,11 @@ func TargetForPodUID(procRoot, cgroupRoot, podUID string) (Target, error) {
 	}
 	cgroupIDs := make(map[uint64]struct{})
 	for _, candidate := range pids {
-		cgroupPath, err := podCgroupPath(procRoot, candidate)
+		cgroupPath, err := podCgroupPath(r.procRoot, candidate)
 		if err != nil {
 			continue
 		}
-		info, err := os.Stat(filepath.Join(cgroupRoot, strings.TrimPrefix(filepath.Clean("/"+cgroupPath), "/")))
+		info, err := os.Stat(filepath.Join(r.cgroupRoot, strings.TrimPrefix(filepath.Clean("/"+cgroupPath), "/")))
 		if err != nil {
 			continue
 		}
@@ -64,6 +130,7 @@ func TargetForPodUID(procRoot, cgroupRoot, podUID string) (Target, error) {
 	for cgroupID := range cgroupIDs {
 		target.CgroupIDs = append(target.CgroupIDs, cgroupID)
 	}
+	r.targets[podUID] = target
 	return target, nil
 }
 
@@ -142,40 +209,4 @@ func podCgroupPath(procRoot string, pid int) (string, error) {
 		return "", fmt.Errorf("read target cgroup: %w", err)
 	}
 	return "", fmt.Errorf("target process is not in a cgroup v2 hierarchy")
-}
-
-func findPodPIDs(procRoot, podUID string) ([]int, error) {
-	entries, err := os.ReadDir(procRoot)
-	if err != nil {
-		return nil, fmt.Errorf("read proc root: %w", err)
-	}
-	dashed := "pod" + podUID
-	underscored := "pod" + strings.ReplaceAll(podUID, "-", "_")
-	var pids []int
-	for _, entry := range entries {
-		pid, err := strconv.Atoi(entry.Name())
-		if err != nil {
-			continue
-		}
-		file, err := os.Open(filepath.Join(procRoot, entry.Name(), "cgroup"))
-		if err != nil {
-			continue
-		}
-		scanner := bufio.NewScanner(file)
-		found := false
-		for scanner.Scan() {
-			if strings.Contains(scanner.Text(), dashed) || strings.Contains(scanner.Text(), underscored) {
-				found = true
-				break
-			}
-		}
-		file.Close()
-		if found {
-			pids = append(pids, pid)
-		}
-	}
-	if len(pids) == 0 {
-		return nil, fmt.Errorf("no process found for Pod UID %s", podUID)
-	}
-	return pids, nil
 }

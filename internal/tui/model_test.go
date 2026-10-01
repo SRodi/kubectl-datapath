@@ -630,6 +630,20 @@ func TestWaitForStreamReportsErrorsImmediately(t *testing.T) {
 	}
 }
 
+func TestWaitForStreamDoesNotLoseErrorAfterObservationsClose(t *testing.T) {
+	observations := make(chan model.Observation)
+	close(observations)
+	errorsChannel := make(chan error, 1)
+	errorsChannel <- errors.New("final capture watermark missing")
+	close(errorsChannel)
+
+	message := waitForStream(observations, errorsChannel)()
+	streamError, ok := message.(streamErrorMsg)
+	if !ok || !strings.Contains(streamError.err.Error(), "final capture watermark missing") {
+		t.Fatalf("message = %#v", message)
+	}
+}
+
 func TestCurrentFlowRetainsAndSortsAllPackets(t *testing.T) {
 	observations := make(chan model.Observation)
 	errorsChannel := make(chan error)
@@ -842,6 +856,10 @@ func TestStatusCountsAllEvidenceAndAttachmentLoss(t *testing.T) {
 			Kind: model.KindConnect, AttachmentID: "connect", Lost: 1,
 			DstAddr: netip.MustParseAddr("10.0.0.2"),
 		},
+		{
+			Kind: model.KindStatus, AttachmentID: "source", Lost: 2, TransportLost: 1,
+			Final: true, Complete: false,
+		},
 	}
 	for _, event := range events {
 		updated, _ := m.Update(observationMsg{observation: event})
@@ -850,5 +868,12 @@ func TestStatusCountsAllEvidenceAndAttachmentLoss(t *testing.T) {
 	view := m.View()
 	if !strings.Contains(view, "Boundary 1  Transit 1  Connect 1  Lost 6  Transport 3") {
 		t.Fatalf("evidence counters are inaccurate:\n%s", view)
+	}
+	if !strings.Contains(view, "Final capture watermarks: 0 complete, 1 incomplete") {
+		t.Fatalf("final capture completeness is not visible:\n%s", view)
+	}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
+	if compact := updated.(Model).renderContent(); !strings.Contains(compact, "F1 B1 T1 C1 L6 X3") {
+		t.Fatalf("narrow layout did not use compact counters:\n%s", compact)
 	}
 }

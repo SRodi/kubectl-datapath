@@ -134,6 +134,10 @@ the packet.
 | `d` | Toggle detailed path, attachment health, and transit evidence |
 | `q` | Quit |
 
+On narrow terminals, the summary counters are compact: `F` / `A` means flows /
+attempts, `B` boundary packets, `T` transit packets, `C` connect intents, `L`
+ring-buffer loss, and `X` log-transport loss.
+
 ## What is observed
 
 | Evidence | Source |
@@ -168,6 +172,10 @@ evidence.
 - Event loss changes missing evidence to incomplete evidence.
 - Per-attachment sequence gaps distinguish log-transport loss from BPF
   ring-buffer loss.
+- On shutdown, every attachment reports its final sequence and ring-buffer
+  loss counters. Missing or incomplete final status makes the trace incomplete;
+  a clean watermark closes the evidence window without turning a gap into a
+  drop verdict.
 - Unsupported encapsulation is reported as unavailable or missing evidence,
   never guessed.
 

@@ -3,6 +3,7 @@ package model
 import (
 	"encoding/json"
 	"net/netip"
+	"strings"
 	"testing"
 )
 
@@ -34,6 +35,28 @@ func TestObservationRoundTripPreservesIPv6AndCookie(t *testing.T) {
 func TestTCPFlagsNameIncludesPayloadRelevantFlags(t *testing.T) {
 	if got := TCPFlagsName(0x18); got != "PSH-ACK" {
 		t.Fatalf("flags = %q", got)
+	}
+}
+
+func TestFinalWatermarkValidation(t *testing.T) {
+	for _, observation := range []Observation{
+		{SchemaVersion: SchemaVersion, Kind: KindStatus, Final: true},
+		{SchemaVersion: SchemaVersion, Kind: KindStatus, Final: true, Complete: true},
+	} {
+		if err := observation.Validate(); err != nil {
+			t.Fatalf("valid terminal status rejected: %v", err)
+		}
+	}
+	if err := (Observation{
+		SchemaVersion: SchemaVersion, Kind: KindPacket, Final: true,
+		SrcAddr: netip.MustParseAddr("10.0.0.1"), DstAddr: netip.MustParseAddr("10.0.0.2"),
+	}).Validate(); err == nil || !strings.Contains(err.Error(), "requires a status observation") {
+		t.Fatalf("packet final flag error = %v", err)
+	}
+	if err := (Observation{
+		SchemaVersion: SchemaVersion, Kind: KindStatus, Complete: true,
+	}).Validate(); err == nil || !strings.Contains(err.Error(), "requires a final watermark") {
+		t.Fatalf("non-final complete status error = %v", err)
 	}
 }
 

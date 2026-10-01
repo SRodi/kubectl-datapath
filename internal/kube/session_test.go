@@ -1,6 +1,8 @@
 package kube
 
 import (
+	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/SRodi/kubectl-datapath/internal/model"
@@ -49,6 +51,53 @@ func TestSequenceTrackerIgnoresUnsequencedStatus(t *testing.T) {
 	})
 	if status.TransportLost != 0 || packet.TransportLost != 0 {
 		t.Fatalf("status=%d packet=%d, want no transport loss", status.TransportLost, packet.TransportLost)
+	}
+}
+
+func TestSequenceTrackerPreservesFinalWatermarkAndDetectsTailLoss(t *testing.T) {
+	tracker := make(sequenceTracker)
+	tracker.annotate(model.Observation{AttachmentID: "source", Sequence: 1})
+	final := tracker.annotate(model.Observation{
+		AttachmentID: "source", Sequence: 4, Lost: 1, Final: true, Complete: true,
+	})
+	if !final.Final || !final.Complete || final.Sequence != 4 {
+		t.Fatalf("final watermark was not preserved: %+v", final)
+	}
+	if final.TransportLost != 1 {
+		t.Fatalf("tail transport loss = %d, want 1", final.TransportLost)
+	}
+}
+
+func TestFinalStatusValidationCoversEveryExpectedAttachment(t *testing.T) {
+	expected := []string{"source", "backend-1", "backend-2"}
+	statuses := map[string]bool{"source": true, "backend-1": false}
+	if got, want := missingFinalStatuses(expected, statuses), []string{"backend-2"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("missing statuses = %v, want %v", got, want)
+	}
+	if got, want := incompleteFinalStatuses(expected, statuses), []string{"backend-1"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("incomplete statuses = %v, want %v", got, want)
+	}
+}
+
+func TestAgentStreamCloseReturnsCleanupErrorOnce(t *testing.T) {
+	want := errors.New("delete failed")
+	var calls int
+	done := make(chan struct{})
+	close(done)
+	stream := &AgentStream{
+		close: func() error {
+			calls++
+			return want
+		},
+		done: done,
+	}
+	for range 2 {
+		if err := stream.Close(); !errors.Is(err, want) {
+			t.Fatalf("close error = %v, want %v", err, want)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("cleanup called %d times, want once", calls)
 	}
 }
 

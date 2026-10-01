@@ -20,7 +20,13 @@ Each agent Pod:
 - attaches eBPF programs to host interfaces and kernel functions;
 - receives no ServiceAccount token;
 - expires through `activeDeadlineSeconds` after 30 minutes;
-- is deleted immediately when the client exits normally.
+- receives a graceful termination signal when the client exits normally so it
+  can detach capture hooks and emit final evidence watermarks before deletion.
+
+Normal cleanup requests a five-second Pod termination grace period and waits up
+to ten seconds for the log stream to finish. If the stream does not finish,
+cleanup reports that final capture status may be missing rather than claiming a
+complete trace.
 
 Keeping Kubernetes credentials out of agents prevents an agent from directly
 using the caller's API permissions. It does not confine the agent. A privileged
@@ -58,7 +64,7 @@ also constrains the allowed Pod specification.
 | Agent remains after a client crash | Pod deadline is 30 minutes | Exposure continues until deletion or deadline |
 | Untrusted agent image executes as node root | Release images are versioned and can be pinned by digest | Mutable or privately rebuilt images require independent trust |
 | Unauthorized user creates arbitrary privileged Pods | Use a dedicated group, namespace, and admission policy | RBAC alone cannot constrain the Pod specification |
-| Observation loss produces a false gap | Ring-buffer loss and sequence-derived log transport loss are reported separately; missing evidence becomes incomplete | Complete loss before the first retained sequence cannot be distinguished from a late stream start |
+| Observation loss produces a false gap | Ring-buffer loss and sequence-derived log-transport loss are reported separately; final per-attachment watermarks detect tail loss and missing/incomplete shutdown status | Complete loss before the first retained sequence cannot be distinguished from a late stream start; Kubernetes log rotation or truncation is surfaced as missing final status |
 | Sensitive traffic metadata is retained | Agents emit selected tuples only and are deleted after the trace | NDJSON output and CI artifacts may contain cluster metadata |
 | Agent changes host networking state | TCX links or owned classic TC filters are removed on session close and agents are short-lived | A harmless shared `clsact` qdisc can remain; process termination or kernel defects can leave state requiring inspection |
 
@@ -87,6 +93,7 @@ metadata:
     pod-security.kubernetes.io/enforce: privileged
     pod-security.kubernetes.io/audit: privileged
     pod-security.kubernetes.io/warn: privileged
+    kubectl-datapath-agent: "true"
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -145,6 +152,62 @@ subjects:
   - apiGroup: rbac.authorization.k8s.io
     kind: Group
     name: kubectl-datapath-users
+```
+
+Where `ValidatingAdmissionPolicy` is enabled, bind a policy to this dedicated
+namespace so Pod creation permission cannot be used to request arbitrary
+privileged workloads. Replace the example digest with the exact agent image
+approved by the platform team; update the policy when upgrading the agent:
+
+```yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: kubectl-datapath-agent-only
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+  validations:
+    - expression: >
+        has(object.metadata.labels) &&
+        object.metadata.labels['app.kubernetes.io/managed-by'] == 'kubectl-datapath' &&
+        object.metadata.labels['app.kubernetes.io/component'] == 'agent' &&
+        object.spec.hostNetwork &&
+        object.spec.hostPID &&
+        object.spec.automountServiceAccountToken == false &&
+        object.spec.containers.size() == 1 &&
+        object.spec.containers.all(c,
+          c.image.matches('^ghcr[.]io/srodi/kubectl-datapath@sha256:[0-9a-f]{64}$') &&
+          c.command == ['/kubectl-datapath'] &&
+          has(c.securityContext) &&
+          c.securityContext.privileged == true &&
+          c.volumeMounts.size() == 2 &&
+          c.volumeMounts.all(m,
+            m.readOnly &&
+            m.mountPath in ['/host/proc', '/host/sys/fs/cgroup'])) &&
+        object.spec.volumes.size() == 2 &&
+        object.spec.volumes.all(v,
+          has(v.hostPath) &&
+          v.hostPath.path in ['/proc', '/sys/fs/cgroup'] &&
+          v.hostPath.type == 'Directory')
+      message: "Only the approved kubectl-datapath agent Pod is allowed"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: kubectl-datapath-agent-only
+spec:
+  policyName: kubectl-datapath-agent-only
+  validationActions: ["Deny"]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubectl-datapath-agent: "true"
 ```
 
 Run traces with:

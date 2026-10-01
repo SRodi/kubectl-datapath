@@ -51,6 +51,33 @@ func TestMergeCaptureSessionsPreservesAttachmentIdentity(t *testing.T) {
 	}
 }
 
+func TestMergeCaptureSessionsDrainsFinalEventsAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	session := &fakeCaptureSession{
+		events: make(chan model.Observation, 1),
+		errors: make(chan error),
+	}
+	session.events <- model.Observation{
+		Kind: model.KindStatus, AttachmentID: "source", Side: "source", Final: true, Complete: true,
+	}
+	close(session.events)
+	close(session.errors)
+
+	events, streamErrors := mergeCaptureSessions(ctx, []namedCaptureSession{
+		{name: "source", session: session},
+	})
+	observation, ok := <-events
+	if !ok || !observation.Final || !observation.Complete {
+		t.Fatalf("final observation = %+v, ok=%t", observation, ok)
+	}
+	for range events {
+	}
+	if err := <-streamErrors; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestMergeCaptureSessionsAttributesErrors(t *testing.T) {
 	session := &fakeCaptureSession{
 		events: make(chan model.Observation),
@@ -80,10 +107,9 @@ func TestBuildTargetPropagatesPodFlowAddresses(t *testing.T) {
 		},
 		"eth0",
 		[]uint64{42},
-		"",
-		"",
 		"session",
 		"worker-a",
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)

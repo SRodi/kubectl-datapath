@@ -46,6 +46,7 @@ type Model struct {
 	evidenceCounts   map[model.Kind]uint64
 	lostByAttachment map[string]uint64
 	transportLost    map[string]uint64
+	finalStatuses    map[string]bool
 	showDetails      bool
 	viewOffset       int
 	followView       bool
@@ -76,6 +77,7 @@ func New(title string, observations <-chan model.Observation, errors <-chan erro
 		evidenceCounts:   make(map[model.Kind]uint64),
 		lostByAttachment: make(map[string]uint64),
 		transportLost:    make(map[string]uint64),
+		finalStatuses:    make(map[string]bool),
 	}
 }
 
@@ -89,12 +91,19 @@ func waitForStream(observations <-chan model.Observation, errors <-chan error) t
 			select {
 			case observation, ok := <-observations:
 				if !ok {
-					return streamClosedMsg{}
+					observations = nil
+					if errors == nil {
+						return streamClosedMsg{}
+					}
+					continue
 				}
 				return observationMsg{observation: observation}
 			case err, ok := <-errors:
 				if !ok {
 					errors = nil
+					if observations == nil {
+						return streamClosedMsg{}
+					}
 					continue
 				}
 				if err != nil {
@@ -159,6 +168,9 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if message.observation.TransportLost > m.transportLost[attachment] {
 			m.transportLost[attachment] = message.observation.TransportLost
+		}
+		if message.observation.Final {
+			m.finalStatuses[attachment] = message.observation.Complete
 		}
 		m.tracker.Observe(message.observation)
 		m.trace.Observe(message.observation)
@@ -235,6 +247,8 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case streamErrorMsg:
 		m.err = message.err
+		m.followView = true
+		m.viewOffset = m.maxViewOffset()
 		return m, waitForStream(m.observations, m.errors)
 	}
 	return m, nil
@@ -255,7 +269,11 @@ func (m Model) View() string {
 
 func (m Model) renderContent() string {
 	var builder strings.Builder
-	fmt.Fprintf(&builder, "%s\n", titleStyle.Render("kubectl-datapath · "+m.title))
+	screenTitle := "kubectl-datapath · " + m.title
+	if m.width > 0 {
+		screenTitle = truncate(screenTitle, m.width)
+	}
+	fmt.Fprintf(&builder, "%s\n", titleStyle.Render(screenTitle))
 
 	flows := m.tracker.Flows()
 	attempts := m.trace.Attempts()
@@ -269,24 +287,58 @@ func (m Model) renderContent() string {
 		transportLost += current
 	}
 	status := "observing"
-	if m.closed {
+	if m.err != nil {
+		status = "incomplete"
+	} else if m.closed {
 		status = "complete"
 	}
-	if serviceTrace {
+	statusStyle := subtleStyle
+	if m.err != nil {
+		statusStyle = warnStyle
+	}
+	if m.width > 0 && m.width < 110 {
+		if serviceTrace {
+			fmt.Fprintf(&builder, "%s  A%d B%d T%d C%d L%d X%d\n\n",
+				statusStyle.Render(status), len(attempts),
+				m.evidenceCounts[model.KindPacket], m.evidenceCounts[model.KindTransit],
+				m.evidenceCounts[model.KindConnect], lost, transportLost)
+		} else {
+			fmt.Fprintf(&builder, "%s  F%d B%d T%d C%d L%d X%d\n\n",
+				statusStyle.Render(status), len(flows),
+				m.evidenceCounts[model.KindPacket], m.evidenceCounts[model.KindTransit],
+				m.evidenceCounts[model.KindConnect], lost, transportLost)
+		}
+	} else if serviceTrace {
 		fmt.Fprintf(&builder, "%s  Attempts %d  Boundary %d  Transit %d  Connect %d  Lost %d  Transport %d\n\n",
-			subtleStyle.Render("Status "+status), len(attempts),
+			statusStyle.Render("Status "+status), len(attempts),
 			m.evidenceCounts[model.KindPacket], m.evidenceCounts[model.KindTransit],
 			m.evidenceCounts[model.KindConnect], lost, transportLost)
 	} else {
 		fmt.Fprintf(&builder, "%s  Flows %d  Boundary %d  Transit %d  Connect %d  Lost %d  Transport %d\n\n",
-			subtleStyle.Render("Status "+status), len(flows),
+			statusStyle.Render("Status "+status), len(flows),
 			m.evidenceCounts[model.KindPacket], m.evidenceCounts[model.KindTransit],
 			m.evidenceCounts[model.KindConnect], lost, transportLost)
+	}
+	if len(m.finalStatuses) > 0 {
+		var complete, incomplete int
+		for _, status := range m.finalStatuses {
+			if status {
+				complete++
+			} else {
+				incomplete++
+			}
+		}
+		finalStyle := exactStyle
+		if incomplete > 0 {
+			finalStyle = warnStyle
+		}
+		fmt.Fprintf(&builder, "%s\n\n",
+			finalStyle.Render(fmt.Sprintf("Final capture watermarks: %d complete, %d incomplete", complete, incomplete)))
 	}
 
 	datapath := m.trace.Datapath()
 	if datapath != nil {
-		renderDatapath(&builder, *datapath)
+		renderDatapath(&builder, *datapath, m.width)
 	}
 
 	stages := m.trace.Stages()
@@ -372,7 +424,7 @@ func (m Model) renderContent() string {
 			builder.WriteString("  " + subtleStyle.Render(row.header) + "\n")
 			continue
 		}
-		builder.WriteString(renderPacket(*row.observation) + "\n")
+		builder.WriteString(renderPacketAtWidth(*row.observation, m.width) + "\n")
 	}
 	if m.err != nil {
 		builder.WriteString("\n" + warnStyle.Render("stream error: "+m.err.Error()) + "\n")
@@ -380,7 +432,7 @@ func (m Model) renderContent() string {
 	return strings.TrimSuffix(builder.String(), "\n")
 }
 
-func renderDatapath(builder *strings.Builder, datapath traceview.DatapathView) {
+func renderDatapath(builder *strings.Builder, datapath traceview.DatapathView, width int) {
 	builder.WriteString(headerStyle.Render("Datapath evidence") + "\n")
 	if datapath.Focus != "" {
 		fmt.Fprintf(builder, "  Latest focus: %s\n", datapath.Focus)
@@ -396,8 +448,16 @@ func renderDatapath(builder *strings.Builder, datapath traceview.DatapathView) {
 	if destinationNode == "" {
 		destinationNode = "unresolved backend node"
 	}
+	nodeWidth := 32
+	podWidth := 30
+	if width > 0 {
+		nodeWidth = max(16, min(nodeWidth, width-18))
+		podWidth = max(12, min(podWidth, width-38))
+	}
+	sourceNode = truncate(sourceNode, nodeWidth)
+	destinationNode = truncate(destinationNode, nodeWidth)
 	fmt.Fprintf(builder, "  srcNode: %s\n", sourceNode)
-	fmt.Fprintf(builder, "    [srcPodNetNS: %s]\n", truncate(datapath.Source.DisplayName(), 36))
+	fmt.Fprintf(builder, "    [srcPodNetNS: %s]\n", truncate(datapath.Source.DisplayName(), podWidth))
 	if datapath.Connect != nil {
 		fmt.Fprintf(builder, "       %s %s: %s\n",
 			captureMarker(*datapath.Connect), datapath.ConnectKind, truncate(datapath.ConnectLabel, 36))
@@ -422,15 +482,21 @@ func renderDatapath(builder *strings.Builder, datapath traceview.DatapathView) {
 	fmt.Fprintf(builder, "    [%s] ──%s to destination Pod (host veth)──> [dstPodNetNS: %s]\n",
 		destinationHost,
 		captureMarker(datapath.DestinationBoundary),
-		truncate(datapath.Destination.DisplayName(), 36),
+		truncate(datapath.Destination.DisplayName(), podWidth),
 	)
 	builder.WriteString("  " + subtleStyle.Render("● observed  × attached, no matching evidence  ! incomplete  ○ not ready/unavailable") + "\n\n")
 	diagnosisStyle := exactStyle
-	if strings.Contains(datapath.Diagnosis, "gap") || strings.Contains(datapath.Diagnosis, "incomplete") {
+	if strings.Contains(datapath.Diagnosis, "gap") ||
+		strings.Contains(datapath.Diagnosis, "incomplete") ||
+		strings.Contains(datapath.Diagnosis, "no matching evidence") {
 		diagnosisStyle = warnStyle
 	}
 	builder.WriteString(headerStyle.Render("Diagnosis") + "\n")
-	builder.WriteString("  " + diagnosisStyle.Render(datapath.Diagnosis) + "\n\n")
+	diagnosis := datapath.Diagnosis
+	if width > 0 {
+		diagnosis = truncate(diagnosis, max(16, width-4))
+	}
+	builder.WriteString("  " + diagnosisStyle.Render(diagnosis) + "\n\n")
 	if len(datapath.Policies) > 0 {
 		builder.WriteString(headerStyle.Render("Relevant configuration") + "\n")
 		for _, policy := range datapath.Policies {
@@ -782,6 +848,28 @@ func renderPacket(observation model.Observation) string {
 	)
 }
 
+func renderPacketAtWidth(observation model.Observation, width int) string {
+	if width <= 0 || width >= 120 {
+		return renderPacket(observation)
+	}
+	confidence := exactStyle.Render(string(observation.Confidence))
+	if observation.Confidence == model.ConfidenceRelated || observation.Confidence == model.ConfidenceUnattributed {
+		confidence = relatedStyle.Render(string(observation.Confidence))
+	}
+	prefix := fmt.Sprintf("  %s %-7s %-9s %-15s %5dB  ",
+		observation.WallTime.Format("15:04:05.000000"),
+		truncate(observation.Side, 7),
+		podDirection(observation),
+		observation.PacketName(),
+		observation.PacketLength,
+	)
+	suffix := "  " + confidence
+	endpointWidth := max(4, (width-lipgloss.Width(prefix)-lipgloss.Width(suffix)-3)/2)
+	source := truncate(displayEndpoint(observation.SrcEndpoint, observation.SrcAddr, observation.SrcPort), endpointWidth)
+	destination := truncate(displayEndpoint(observation.DstEndpoint, observation.DstAddr, observation.DstPort), endpointWidth)
+	return prefix + source + " → " + destination + suffix
+}
+
 func renderTransit(observation model.Observation) string {
 	inner := fmt.Sprintf("%s:%d → %s:%d",
 		observation.SrcAddr, observation.SrcPort, observation.DstAddr, observation.DstPort)
@@ -894,13 +982,17 @@ func displayEndpoint(endpoint *model.Endpoint, address interface{ String() strin
 }
 
 func truncate(value string, width int) string {
-	if len(value) <= width {
+	if width <= 0 {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= width {
 		return value
 	}
-	if width < 2 {
-		return value[:width]
+	if width == 1 {
+		return "…"
 	}
-	return value[:width-1] + "…"
+	return string(runes[:width-1]) + "…"
 }
 
 func Run(ctx context.Context, title string, observations <-chan model.Observation, errors <-chan error, input io.Reader, output io.Writer) error {

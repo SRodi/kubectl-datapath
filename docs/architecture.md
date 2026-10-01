@@ -58,6 +58,11 @@ All targets are known before agents start. A node agent receives a list of
 Pod-UID or route targets, opens one capture session for each, and multiplexes
 their events onto one log stream.
 
+For Pod targets, the agent indexes host process cgroup files once for all
+requested Pod UIDs, then resolves each Pod's interface and cgroup IDs from that
+index. This avoids a full `/proc` scan per attachment when a node hosts several
+selected endpoints.
+
 The sessions remain independent:
 
 - separate BPF objects and maps;
@@ -162,6 +167,14 @@ calculate latency.
 Each BPF session emits a monotonic sequence and cumulative ring-buffer loss.
 The client validates sequence continuity per attachment. A gap not explained
 by ring-buffer loss is reported separately as log-transport loss.
+
+During shutdown, the agent detaches capture hooks, reads the final sequence and
+loss counters, then emits a terminal status for every attachment. The client
+checks that all expected attachments supplied a complete terminal status before
+accepting a natural end of the log stream. Missing or incomplete status is
+reported as incomplete evidence, including loss at the end of a trace where no
+later packet could expose a sequence gap. Agent cleanup and Pod deletion errors
+are returned to the caller rather than silently discarded.
 
 ## Capture implementation
 
