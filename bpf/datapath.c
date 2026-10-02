@@ -272,6 +272,16 @@ static __always_inline int parse_transport(struct __sk_buff *skb, __u32 offset,
 	return 0;
 }
 
+static __always_inline int parse_flow(struct __sk_buff *skb, __u32 offset,
+				      struct event *event)
+{
+	if (event->protocol == IPPROTO_TCP || event->protocol == IPPROTO_UDP)
+		return parse_transport(skb, offset, event);
+	if (event->protocol == IPPROTO_ICMP || event->protocol == IPPROTO_ICMPV6)
+		return 0;
+	return -1;
+}
+
 static __always_inline int parse_ip(struct __sk_buff *skb, __u32 offset,
 				    __u16 protocol, struct event *event,
 				    __u32 *transport_offset)
@@ -366,7 +376,7 @@ static __always_inline int emit_transit(struct __sk_buff *skb, __u8 direction)
 			*event = (struct event){};
 			__u32 inner_transport = 0;
 			if (parse_ip(skb, inner_offset, inner_protocol, event, &inner_transport) < 0 ||
-			    parse_transport(skb, inner_transport, event) < 0 ||
+			    parse_flow(skb, inner_transport, event) < 0 ||
 			    !selected_flow(event))
 				return TC_ACT_UNSPEC;
 			event->kind = EVENT_TRANSIT;
@@ -388,7 +398,7 @@ static __always_inline int emit_transit(struct __sk_buff *skb, __u8 direction)
 		}
 	}
 
-	if (parse_transport(skb, transport_offset, outer) < 0 ||
+	if (parse_flow(skb, transport_offset, outer) < 0 ||
 	    !selected_flow(outer))
 		return TC_ACT_UNSPEC;
 	outer->kind = EVENT_TRANSIT;
@@ -461,12 +471,8 @@ static __always_inline int emit(struct __sk_buff *skb, __u8 direction)
 		return TC_ACT_UNSPEC;
 	}
 
-	if (temporary->protocol == IPPROTO_TCP || temporary->protocol == IPPROTO_UDP) {
-		if (parse_transport(skb, offset, temporary) < 0)
-			return TC_ACT_UNSPEC;
-	} else if (temporary->protocol != IPPROTO_ICMP && temporary->protocol != IPPROTO_ICMPV6) {
+	if (parse_flow(skb, offset, temporary) < 0)
 		return TC_ACT_UNSPEC;
-	}
 	if (mode && *mode == CAPTURE_POD_FILTERED && !selected_flow(temporary))
 		return TC_ACT_UNSPEC;
 

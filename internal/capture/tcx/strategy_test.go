@@ -35,3 +35,25 @@ func TestObservationFromRawDecodesVXLANTransit(t *testing.T) {
 		t.Fatalf("observation = %#v", observation)
 	}
 }
+
+func TestObservationFromRawDecodesNativeICMPTransit(t *testing.T) {
+	raw := bpfEvent{
+		Kind: 3, MonotonicNs: 42, Ifindex: 7, PacketLength: 84,
+		Family: 4, Protocol: 1, Direction: 1,
+		SrcAddr: [16]uint8{10, 244, 2, 3}, DstAddr: [16]uint8{10, 244, 1, 7},
+		Encapsulation: 1,
+	}
+	observation := observationFromRaw(capture.Target{
+		SessionID: "session", AttachID: "transit-destination-worker-b",
+		Side: "transit-destination", Node: "worker-b", Interface: "eth0",
+	}, raw, 1000)
+	if observation.Kind != model.KindTransit ||
+		observation.Protocol != 1 ||
+		observation.Encapsulation != model.EncapsulationNative ||
+		observation.SrcAddr != netip.MustParseAddr("10.244.2.3") ||
+		observation.DstAddr != netip.MustParseAddr("10.244.1.7") ||
+		observation.Direction != model.DirectionIngress ||
+		observation.Confidence != model.ConfidenceCorrelated {
+		t.Fatalf("observation = %#v", observation)
+	}
+}
