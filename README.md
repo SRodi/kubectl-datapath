@@ -209,14 +209,21 @@ selecting a secondary dual-stack address is not yet supported.
 ## Development
 
 The generated BPF objects are checked in, so `make build` works on supported
-Go development hosts, including macOS. Regenerating them requires a Linux
-system with Clang/LLVM and Linux UAPI headers installed.
+Go development hosts, including macOS. Regenerate them through the pinned
+Linux toolchain container on either macOS or Linux:
 
 ```sh
-make generate
+make generate-bpf
 make check
 make build
 ```
+
+The portable generator requires Docker with support for running `linux/arm64`
+images. Docker Desktop provides this on macOS; Linux hosts may need QEMU
+binfmt support. The image pins the Clang 19.1.7 environment used for the
+checked-in objects. On Linux hosts with Clang/LLVM and Linux UAPI headers
+installed, `make generate` runs the `go:generate` directive directly without
+Docker, but its output can vary with the host Clang version.
 
 ### End-to-end testing
 

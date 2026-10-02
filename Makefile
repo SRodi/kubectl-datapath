@@ -2,6 +2,8 @@ BINARY := bin/kubectl-datapath
 GIT_SHA ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo dev)
 IMAGE ?= kubectl-datapath:e2e
 REGISTRY_IMAGE ?= ghcr.io/srodi/kubectl-datapath:sha-$(GIT_SHA)
+BPF_GENERATOR_IMAGE ?= quay.io/cilium/cilium-builder:acc6214750a75465edd69451692572f35efba34d@sha256:2b069f0b1296ae760c70f2fc533faf0d851b01c7b6fa0925992cef862d31ef92
+BPF_GENERATOR_PLATFORM ?= linux/arm64
 E2E_CLUSTER ?= kubectl-datapath-e2e
 KIND_VERSION ?= v0.33.0
 CILIUM_VERSION ?= 1.20.2
@@ -20,7 +22,7 @@ GHCR_TOKEN ?= $(shell gh auth token 2>/dev/null)
 GORELEASER_VERSION ?= v2.18.2
 KREW_LOCAL_MANIFEST ?= dist/datapath.yaml
 
-.PHONY: generate build test vet fmt check clean ci-unit \
+.PHONY: generate generate-bpf build test vet fmt check clean ci-unit \
 	architecture-diagrams check-architecture-diagrams \
 	docker-build docker-push print-registry-image kind-load image-pull-secret \
 	kind-kindnet-up kind-flannel-up kind-cilium-up kind-calico-up kind-down \
@@ -29,6 +31,12 @@ KREW_LOCAL_MANIFEST ?= dist/datapath.yaml
 
 generate:
 	go generate ./...
+
+generate-bpf:
+	docker run --rm --platform $(BPF_GENERATOR_PLATFORM) \
+		-e HOST_UID=$(shell id -u) -e HOST_GID=$(shell id -g) \
+		-v "$(CURDIR):/src" -w /src $(BPF_GENERATOR_IMAGE) \
+		sh /src/scripts/generate-bpf-container.sh
 
 build:
 	go build -o $(BINARY) ./cmd/kubectl-datapath
@@ -45,7 +53,7 @@ fmt:
 check: test vet
 	@test -z "$$(gofmt -l $$(find . -name '*.go' -not -path './internal/capture/tcx/bpf_*'))"
 
-ci-unit: generate
+ci-unit: generate-bpf
 	git diff --exit-code
 	$(MAKE) check-architecture-diagrams
 	$(MAKE) check
