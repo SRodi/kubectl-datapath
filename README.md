@@ -208,6 +208,10 @@ selecting a secondary dual-stack address is not yet supported.
 
 ## Development
 
+The generated BPF objects are checked in, so `make build` works on supported
+Go development hosts, including macOS. Regenerating them requires a Linux
+system with Clang/LLVM and Linux UAPI headers installed.
+
 ```sh
 make generate
 make check

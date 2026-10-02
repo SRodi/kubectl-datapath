@@ -30,7 +30,7 @@ KREW_LOCAL_MANIFEST ?= dist/datapath.yaml
 generate:
 	go generate ./...
 
-build: generate
+build:
 	go build -o $(BINARY) ./cmd/kubectl-datapath
 
 test:
@@ -180,3 +180,7 @@ e2e-calico:
 	CNI=calico ./scripts/e2e-test.sh
 
 e2e-all: e2e-kindnet e2e-flannel e2e-cilium e2e-calico
+
+label-nodes:
+	kubectl label no kubectl-datapath-e2e-worker datapath.e2e/role=source --overwrite
+	kubectl label no kubectl-datapath-e2e-worker2 datapath.e2e/role=destination --overwrite
