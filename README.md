@@ -1,7 +1,9 @@
 # kubectl-datapath
 
 `kubectl-datapath` shows **where Kubernetes traffic was observed and where
-matching evidence stopped**.
+matching evidence stopped**. It is an educational tool for exploring how
+Kubernetes traffic moves through application, Pod, Service, and node
+boundaries.
 
 ![kubectl-datapath terminal view](docs/kubectl-datapath.png)
 

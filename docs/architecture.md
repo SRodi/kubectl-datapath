@@ -8,15 +8,18 @@ claims.
 
 1. **Answer one path question.** A trace always has a source Pod and an explicit
    Pod or Service destination.
-2. **Show evidence before conclusions.** Observation points and uncertainty are
+2. **Teach through observable evidence.** Help users explore the Kubernetes
+   datapath by making observation points, translations, and evidence gaps
+   visible.
+3. **Show evidence before conclusions.** Observation points and uncertainty are
    visible in the primary TUI map.
-3. **Keep cluster access local.** Kubernetes credentials never enter capture
+4. **Keep cluster access local.** Kubernetes credentials never enter capture
    agents.
-4. **Leave no permanent privileged component.** Agents exist only for the
+5. **Leave no permanent privileged component.** Agents exist only for the
    trace.
-5. **Scale by node, not attachment.** One agent Pod on each involved node hosts
+6. **Scale by node, not attachment.** One agent Pod on each involved node hosts
    independent capture sessions.
-6. **Keep artifacts reviewable.** Observations are versioned NDJSON; diagrams
+7. **Keep artifacts reviewable.** Observations are versioned NDJSON; diagrams
    are generated SVGs with Mermaid sources stored beside them.
 
 ## System architecture
