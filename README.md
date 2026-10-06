@@ -5,7 +5,7 @@ matching evidence stopped**. It is an educational tool for exploring how
 Kubernetes traffic moves through application, Pod, Service, and node
 boundaries.
 
-![kubectl-datapath terminal view](docs/kubectl-datapath.png)
+![kubectl-datapath tracing cross-node traffic over VXLAN](docs/kubectl-datapath.gif)
 
 It starts short-lived, credential-free agents on the involved nodes, captures
 selected kernel evidence, and renders a live terminal view. It does not turn
