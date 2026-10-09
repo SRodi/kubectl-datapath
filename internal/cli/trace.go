@@ -250,11 +250,13 @@ func runServiceTrace(
 	if err != nil {
 		return err
 	}
+	watchCtx, cancelWatch := captureWatchContext(ctx, streams)
+	defer cancelWatch()
 	streams = append(streams, startPolicyContextStream(
-		command, ctx, client, sessionID, serviceTrace.Context, source, backends,
+		command, watchCtx, client, sessionID, serviceTrace.Context, source, backends,
 	))
 	streams = append(streams, startServiceTopologyStream(
-		command, ctx, client, source, *serviceTrace.Context.Service, serviceTrace.Context.Backends,
+		command, watchCtx, client, source, *serviceTrace.Context.Service, serviceTrace.Context.Backends,
 	))
 	deliveryCtx, cleanup := traceStreamContext(ctx, streams)
 	defer func() {
@@ -306,6 +308,9 @@ func startServiceTopologyStream(
 				current, err := client.ResolveServiceTrace(
 					ctx, source, service.Namespace+"/"+service.Name,
 				)
+				if ctx.Err() != nil {
+					return
+				}
 				if err != nil {
 					if err.Error() != lastWarning {
 						fmt.Fprintf(command.ErrOrStderr(), "warning: Service topology refresh failed: %v\n", err)
@@ -383,6 +388,9 @@ func policyContextStream(
 				return
 			case <-ticker.C:
 				policies, warnings := client.RelevantNetworkPolicies(ctx, source, destinations)
+				if ctx.Err() != nil {
+					return
+				}
 				for _, warning := range warnings {
 					message := warning.Error()
 					if message != lastWarning {

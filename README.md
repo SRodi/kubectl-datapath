@@ -206,6 +206,14 @@ evidence.
   loss counters. Missing or incomplete final status makes the trace incomplete;
   a clean watermark closes the evidence window without turning a gap into a
   drop verdict.
+- Agent Pods are deleted after their log streams finish and final counters
+  are drained, even if the TUI remains open for inspecting results. Service
+  metadata watchers stop when all capture agents finish. Transient deletion
+  failures are retried; persistent failures identify the Pod that may remain.
+  Cleanup still requires a live client with API access: the 30-minute Pod
+  deadline stops capture but is not a deletion TTL. Deleted Pod logs are no
+  longer available through `kubectl logs`; use `--no-tui` and redirect output
+  to a file to retain a replayable NDJSON recording.
 - Unsupported encapsulation is reported as unavailable or missing evidence,
   never guessed.
 

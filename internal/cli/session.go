@@ -119,6 +119,21 @@ func traceStreamContext(ctx context.Context, streams []*kube.AgentStream) (conte
 	}
 }
 
+func captureWatchContext(ctx context.Context, streams []*kube.AgentStream) (context.Context, context.CancelFunc) {
+	watchCtx, cancel := context.WithCancel(ctx)
+	go func() {
+		defer cancel()
+		for _, stream := range streams {
+			select {
+			case <-stream.Done:
+			case <-watchCtx.Done():
+				return
+			}
+		}
+	}()
+	return watchCtx, cancel
+}
+
 func mergeStreams(ctx context.Context, streams ...*kube.AgentStream) (<-chan model.Observation, <-chan error) {
 	observations := make(chan model.Observation, 1024)
 	streamErrors := make(chan error, len(streams))

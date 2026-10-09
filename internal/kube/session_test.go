@@ -89,7 +89,7 @@ func TestAgentStreamCloseReturnsCleanupErrorOnce(t *testing.T) {
 			calls++
 			return want
 		},
-		done: done,
+		Done: done,
 	}
 	for range 2 {
 		if err := stream.Close(); !errors.Is(err, want) {

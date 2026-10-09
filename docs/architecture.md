@@ -40,7 +40,7 @@ Each agent Pod is:
 - mounted read-only to host procfs and cgroup v2;
 - created without a ServiceAccount token;
 - bounded by a 30-minute deadline;
-- deleted when the trace ends.
+- deleted after their capture log stream ends, or when the client stops the trace.
 
 The privilege is broad at the node boundary, so minimizing agent lifetime and
 count matters. Grouping by node reduces a typical cross-node Service trace from
@@ -212,6 +212,21 @@ accepting a natural end of the log stream. Missing or incomplete status is
 reported as incomplete evidence, including loss at the end of a trace where no
 later packet could expose a sequence gap. Agent cleanup and Pod deletion errors
 are returned to the caller rather than silently discarded.
+
+On natural completion (including the Pod's 30-minute deadline), the log reader
+validates final status and closes the log stream before deleting the agent Pod.
+Deletion does not wait for the user to exit the results view. Explicit client
+shutdown and automatic deletion share one cleanup operation; transient API or
+network errors get up to three attempts, each with a five-second timeout.
+Deletion uses the created Pod's UID to avoid deleting a replacement object.
+Persistent failures report the namespace/name of the Pod that may remain.
+Service metadata watchers stop after all capture streams finish, allowing the
+session to reach its finished state while retaining the in-memory results.
+
+These are client-driven cleanup guarantees, not server-side garbage collection.
+A killed client or sustained loss of API access can still leave terminal Pods
+behind. Standalone Pods have no Job-style TTL, and their active deadline only
+terminates execution.
 
 ## Capture implementation
 

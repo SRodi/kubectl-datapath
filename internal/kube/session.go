@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"sort"
 	"strings"
 	"sync"
@@ -23,8 +25,8 @@ type AgentStream struct {
 	Errors       <-chan error
 	AttachmentID string
 	Side         string
+	Done         <-chan struct{}
 	close        func() error
-	done         <-chan struct{}
 	cancel       context.CancelFunc
 	closeOnce    sync.Once
 	closeErr     error
@@ -73,11 +75,11 @@ func (s *AgentStream) Close() error {
 		if s.close != nil {
 			s.closeErr = s.close()
 		}
-		if s.done != nil {
+		if s.Done != nil {
 			timer := time.NewTimer(agentShutdownTimeout)
 			defer timer.Stop()
 			select {
-			case <-s.done:
+			case <-s.Done:
 			case <-timer.C:
 				s.closeErr = errors.Join(s.closeErr, fmt.Errorf(
 					"agent log stream did not finish within %s; final capture status may be missing",
@@ -101,15 +103,7 @@ func (c *Client) StartAgent(ctx context.Context, options AgentOptions, index *en
 	var cleanupErr error
 	cleanup := func() error {
 		cleanupOnce.Do(func() {
-			grace := int64(5)
-			cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			err := c.Clientset.CoreV1().Pods(options.Namespace).Delete(cleanupCtx, created.Name, metav1.DeleteOptions{
-				GracePeriodSeconds: &grace,
-			})
-			if err != nil && !apierrors.IsNotFound(err) {
-				cleanupErr = fmt.Errorf("delete agent Pod %s: %w", created.Name, err)
-			}
+			cleanupErr = c.deleteAgentPod(created)
 		})
 		return cleanupErr
 	}
@@ -136,6 +130,7 @@ func (c *Client) StartAgent(ctx context.Context, options AgentOptions, index *en
 		defer close(done)
 		defer close(observations)
 		defer close(streamErrors)
+		defer cancelStream()
 		scanner := bufio.NewScanner(logs)
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 		sequences := make(sequenceTracker)
@@ -205,6 +200,7 @@ func (c *Client) StartAgent(ctx context.Context, options AgentOptions, index *en
 		if err := logs.Close(); err != nil && streamCtx.Err() == nil {
 			streamErr = errors.Join(streamErr, fmt.Errorf("close agent %s log stream: %w", created.Name, err))
 		}
+		streamErr = errors.Join(streamErr, cleanup())
 		if streamErr != nil {
 			streamErrors <- streamErr
 		}
@@ -216,9 +212,41 @@ func (c *Client) StartAgent(ctx context.Context, options AgentOptions, index *en
 		AttachmentID: options.AttachmentID,
 		Side:         options.Side,
 		close:        cleanup,
-		done:         done,
+		Done:         done,
 		cancel:       cancelStream,
 	}, nil
+}
+
+func (c *Client) deleteAgentPod(pod *corev1.Pod) error {
+	grace := int64(5)
+	options := metav1.DeleteOptions{
+		GracePeriodSeconds: &grace,
+		Preconditions:      &metav1.Preconditions{UID: &pod.UID},
+	}
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err = c.Clientset.CoreV1().Pods(pod.Namespace).Delete(ctx, pod.Name, options)
+		cancel()
+		if err == nil || apierrors.IsNotFound(err) {
+			return nil
+		}
+		if !retryableAgentDelete(err) {
+			break
+		}
+		if attempt < 2 {
+			time.Sleep(time.Duration(attempt+1) * 250 * time.Millisecond)
+		}
+	}
+	return fmt.Errorf("delete agent Pod %s/%s failed; Pod may remain: %w", pod.Namespace, pod.Name, err)
+}
+
+func retryableAgentDelete(err error) bool {
+	var networkError net.Error
+	return apierrors.IsTimeout(err) || apierrors.IsServerTimeout(err) ||
+		apierrors.IsTooManyRequests(err) || apierrors.IsServiceUnavailable(err) ||
+		apierrors.IsInternalError(err) || errors.As(err, &networkError) ||
+		errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
 }
 
 func expectedAttachmentSides(options AgentOptions) map[string]string {
