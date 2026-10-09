@@ -13,7 +13,7 @@ missing packets into unsupported delivery or drop verdicts.
 
 ```text
 src Pod             source node          destination node       dst Pod
-  ● connect intent     ● source veth         ● underlay            × host veth
+  ● connect intent     ● pod boundary        ● underlay            × pod boundary
                        └──── observed ────────┴──── evidence gap ────┘
 ```
 
@@ -102,6 +102,11 @@ path question instead of mixing unrelated node traffic.
 
 The primary view is the selected network-namespace path:
 
+This example uses veth interfaces. Live labels use the detected link kind:
+for example, `netkit (L3)` rather than `veth`. Older recordings without link
+metadata use the neutral label `pod-facing interface`. Pod-to-Pod traces
+focus on `selected pod traffic`, not a backend TCP attempt.
+
 ```text
 Datapath evidence
   Latest focus: backend TCP attempt
@@ -145,7 +150,7 @@ ring-buffer loss, and `X` log-transport loss.
 | Evidence | Source |
 |---|---|
 | Application destination | BTF/fentry at `__sys_connect` for the source Pod cgroup |
-| Pod boundary packets | TCX, or classic TC fallback, on the host side of the selected Pod veth |
+| Pod boundary packets | TCX, or classic TC fallback, on the selected Pod's host-side peer interface |
 | Native node transit | TCX, or classic TC fallback, on the route-selected node interface |
 | VXLAN transit | Outer tuple, UDP ports, VNI, and selected inner tuple |
 | DNS exchange | Source boundary plus ready `kube-dns` EndpointSlice Pods |
@@ -154,6 +159,29 @@ ring-buffer loss, and `X` log-transport loss.
 Service traces correlate TCP Service frontends, ready backends, DNS, TCP
 attempts, and translation evidence. UDP-only Services are rejected explicitly.
 Pod traces retain TCP, UDP, and ICMP traffic matching the selected Pod pair.
+
+Host peers are discovered via the Pod interface's peer index. Rtnetlink
+provides the actual link kind, netkit mode, master interface, and VRF table
+when applicable. L3 netkit can expose Ethernet-format headers at these TCX
+hooks; L3 mode does not imply that packet capture requires veth.
+
+### Capture diagnostics
+
+Press `d` to see each attachment's interface name, index, kind, master/VRF,
+and cumulative counters for each ingress/egress hook:
+
+- `seen`: packets that invoked the hook;
+- `parse-rejected`: packets the parser could not decode, including unsupported
+  protocols, encapsulation, or malformed/truncated headers;
+- `filtered`: decoded packets excluded by the address allowlist;
+- `emitted`: events submitted to the ring buffer;
+- `lost`: matching events that could not be reserved in the ring buffer.
+
+These counters describe all traffic at the hook, not only the selected flow.
+They are saved in NDJSON and retained by replay. Live snapshots can race with
+packet processing; final counters are read after detach. Parser rejection is
+not a network drop, and zero ring-buffer loss does not prove full visibility.
+Old recordings show counters as unavailable, not zero.
 
 The ready backend set is a trace-start snapshot. If EndpointSlices change
 during a trace, the trace stops and asks you to restart rather than presenting
@@ -193,6 +221,7 @@ Supported today:
 - Native routing and VXLAN on UDP `8472` or `4789`
 - Live NetworkPolicy selection context
 - Replayable NDJSON
+- L3 netkit/VRF Pod boundaries with native node routing
 
 Not decoded today:
 
@@ -203,6 +232,29 @@ Not decoded today:
 
 Encrypted or unsupported underlays may hide the inner transit tuple. The tool
 reports that limitation rather than inventing a path.
+
+### Netkit validation
+
+On an existing netkit-cni cluster with its Python HTTP test workloads
+(`netkit-test/same-a`, `same-b`, and `cross-b`), build and load the updated
+agent image on every involved node, then run:
+
+```sh
+E2E_IMAGE=kubectl-datapath:e2e make e2e-netkit
+```
+
+This checks same-node and cross-node requests, both hook directions at each
+Pod boundary, native transit, detected L3 netkit and `nk-vrf` table 100,
+complete final diagnostic counters, and replay metadata. It does not install
+a CNI or replace workloads. Override `E2E_NETKIT_NAMESPACE`,
+`E2E_NETKIT_SOURCE`, `E2E_NETKIT_SAME_NODE`, `E2E_NETKIT_CROSS_NODE`, and
+`E2E_NETKIT_PORT` for equivalent workloads. `E2E_ARTIFACT_DIR` selects the
+recording directory.
+
+On Linux with BPF privileges, also run
+`sudo env DATAPATH_BPF_TEST=1 go test ./internal/capture/tcx -run TestPacketDiagnosticsBPF`
+to exercise parser rejection, filtering, successful emission, ring-buffer
+exhaustion, and unchanged forwarding verdicts without attaching to interfaces.
 
 For dual-stack Pods, the current trace identity and transit plan use the
 primary `status.podIPs` address. IPv4 and IPv6 single-stack paths are supported;

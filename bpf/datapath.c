@@ -128,6 +128,28 @@ struct {
 	__type(value, struct event);
 } scratch_events SEC(".maps");
 
+struct packet_counters {
+	__u64 seen;
+	__u64 parse_rejected;
+	__u64 filtered;
+	__u64 emitted;
+	__u64 lost;
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 2);
+	__type(key, __u32);
+	__type(value, struct packet_counters);
+} packet_counters SEC(".maps");
+
+enum capture_result {
+	CAPTURE_PARSE_REJECTED = TC_ACT_UNSPEC,
+	CAPTURE_EMITTED = 0,
+	CAPTURE_LOST = 1,
+	CAPTURE_FILTERED = 2,
+};
+
 struct eth_header {
 	__u8 dst[6];
 	__u8 src[6];
@@ -212,7 +234,7 @@ static __always_inline void copy_addr(__u8 dst[16], const __u8 *src, int length)
 		dst[i] = i < length ? src[i] : 0;
 }
 
-static __always_inline void submit(struct event *temporary)
+static __always_inline int submit(struct event *temporary)
 {
 	/* Sequence numbers advance for every attempted event; reservation
 	 * failures increment cumulative loss instead. */
@@ -228,10 +250,11 @@ static __always_inline void submit(struct event *temporary)
 	if (!output) {
 		if (lost)
 			__sync_fetch_and_add(lost, 1);
-		return;
+		return CAPTURE_LOST;
 	}
 	*output = *temporary;
 	bpf_ringbuf_submit(output, 0);
+	return CAPTURE_EMITTED;
 }
 
 static __always_inline int selected_address(__u8 family, __u8 addr[16])
@@ -376,9 +399,10 @@ static __always_inline int emit_transit(struct __sk_buff *skb, __u8 direction)
 			*event = (struct event){};
 			__u32 inner_transport = 0;
 			if (parse_ip(skb, inner_offset, inner_protocol, event, &inner_transport) < 0 ||
-			    parse_flow(skb, inner_transport, event) < 0 ||
-			    !selected_flow(event))
+			    parse_flow(skb, inner_transport, event) < 0)
 				return TC_ACT_UNSPEC;
+			if (!selected_flow(event))
+				return CAPTURE_FILTERED;
 			event->kind = EVENT_TRANSIT;
 			event->monotonic_ns = bpf_ktime_get_ns();
 			event->ifindex = skb->ifindex;
@@ -393,22 +417,21 @@ static __always_inline int emit_transit(struct __sk_buff *skb, __u8 direction)
 			event->tunnel_id = ((__u32)vxlan.vni[0] << 16) |
 					  ((__u32)vxlan.vni[1] << 8) |
 					  vxlan.vni[2];
-			submit(event);
-			return TC_ACT_UNSPEC;
+			return submit(event);
 		}
 	}
 
-	if (parse_flow(skb, transport_offset, outer) < 0 ||
-	    !selected_flow(outer))
+	if (parse_flow(skb, transport_offset, outer) < 0)
 		return TC_ACT_UNSPEC;
+	if (!selected_flow(outer))
+		return CAPTURE_FILTERED;
 	outer->kind = EVENT_TRANSIT;
 	outer->monotonic_ns = bpf_ktime_get_ns();
 	outer->ifindex = skb->ifindex;
 	outer->packet_length = skb->len;
 	outer->direction = direction;
 	outer->encapsulation = ENCAPSULATION_NATIVE;
-	submit(outer);
-	return TC_ACT_UNSPEC;
+	return submit(outer);
 }
 
 static __always_inline int emit(struct __sk_buff *skb, __u8 direction)
@@ -474,22 +497,48 @@ static __always_inline int emit(struct __sk_buff *skb, __u8 direction)
 	if (parse_flow(skb, offset, temporary) < 0)
 		return TC_ACT_UNSPEC;
 	if (mode && *mode == CAPTURE_POD_FILTERED && !selected_flow(temporary))
-		return TC_ACT_UNSPEC;
+		return CAPTURE_FILTERED;
 
-	submit(temporary);
+	return submit(temporary);
+}
+
+static __always_inline int observe(struct __sk_buff *skb, __u8 direction)
+{
+	__u32 key = direction - 1;
+	struct packet_counters *counters = bpf_map_lookup_elem(&packet_counters, &key);
+	if (counters)
+		__sync_fetch_and_add(&counters->seen, 1);
+	int result = emit(skb, direction);
+	if (counters) {
+		switch (result) {
+		case CAPTURE_EMITTED:
+			__sync_fetch_and_add(&counters->emitted, 1);
+			break;
+		case CAPTURE_LOST:
+			__sync_fetch_and_add(&counters->lost, 1);
+			break;
+		case CAPTURE_FILTERED:
+			__sync_fetch_and_add(&counters->filtered, 1);
+			break;
+		default:
+			__sync_fetch_and_add(&counters->parse_rejected, 1);
+			break;
+		}
+	}
+	/* Capture outcomes are diagnostics, never forwarding decisions. */
 	return TC_ACT_UNSPEC;
 }
 
 SEC("tc")
 int observe_ingress(struct __sk_buff *skb)
 {
-	return emit(skb, DIRECTION_INGRESS);
+	return observe(skb, DIRECTION_INGRESS);
 }
 
 SEC("tc")
 int observe_egress(struct __sk_buff *skb)
 {
-	return emit(skb, DIRECTION_EGRESS);
+	return observe(skb, DIRECTION_EGRESS);
 }
 
 SEC("fentry/__sys_connect")

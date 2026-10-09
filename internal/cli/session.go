@@ -92,6 +92,33 @@ func consume(command *cobra.Command, ctx context.Context, title string, observat
 	return tui.Run(ctx, title, observations, errors, os.Stdin, command.OutOrStdout())
 }
 
+// Stop agents on interruption, but keep the delivery pipeline alive until the
+// consumer has drained their final counters. Cleanup also handles early errors.
+func traceStreamContext(ctx context.Context, streams []*kube.AgentStream) (context.Context, func() error) {
+	deliveryCtx, cancelDelivery := context.WithCancel(context.WithoutCancel(ctx))
+	done := make(chan struct{})
+	var closeOnce sync.Once
+	var closeErr error
+	closeStreams := func() error {
+		closeOnce.Do(func() {
+			closeErr = closeAgentStreams(streams)
+		})
+		return closeErr
+	}
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = closeStreams()
+		case <-done:
+		}
+	}()
+	return deliveryCtx, func() error {
+		close(done)
+		cancelDelivery()
+		return closeStreams()
+	}
+}
+
 func mergeStreams(ctx context.Context, streams ...*kube.AgentStream) (<-chan model.Observation, <-chan error) {
 	observations := make(chan model.Observation, 1024)
 	streamErrors := make(chan error, len(streams))

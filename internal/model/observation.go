@@ -110,53 +110,80 @@ const (
 	DirectionUnknown Direction = "unknown"
 )
 
+// HookDiagnostics are cumulative, attachment-local packet counters. Live
+// snapshots can race with packet processing; final snapshots follow detach.
+type HookDiagnostics struct {
+	Hook          string `json:"hook"`
+	Seen          uint64 `json:"seen"`
+	ParseRejected uint64 `json:"parse_rejected"`
+	Filtered      uint64 `json:"filtered"`
+	Emitted       uint64 `json:"emitted"`
+	Lost          uint64 `json:"lost"`
+}
+
 type Observation struct {
-	SchemaVersion int           `json:"schema_version"`
-	Kind          Kind          `json:"kind"`
-	SessionID     string        `json:"session_id,omitempty"`
-	AttachmentID  string        `json:"attachment_id,omitempty"`
-	Side          string        `json:"side,omitempty"`
-	Node          string        `json:"node,omitempty"`
-	Point         string        `json:"point,omitempty"`
-	Direction     Direction     `json:"direction,omitempty"`
-	MonotonicNS   uint64        `json:"monotonic_ns,omitempty"`
-	WallTime      time.Time     `json:"wall_time,omitempty"`
-	Sequence      uint64        `json:"sequence,omitempty"`
-	Lost          uint64        `json:"lost,omitempty"`
-	TransportLost uint64        `json:"transport_lost,omitempty"`
-	Final         bool          `json:"final,omitempty"`
-	Complete      bool          `json:"complete,omitempty"`
-	Family        uint8         `json:"family,omitempty"`
-	Protocol      uint8         `json:"protocol,omitempty"`
-	SrcAddr       netip.Addr    `json:"src_addr,omitempty"`
-	DstAddr       netip.Addr    `json:"dst_addr,omitempty"`
-	SrcPort       uint16        `json:"src_port,omitempty"`
-	DstPort       uint16        `json:"dst_port,omitempty"`
-	PacketLength  uint32        `json:"packet_length,omitempty"`
-	TCPFlags      uint8         `json:"tcp_flags,omitempty"`
-	TCPSequence   uint32        `json:"tcp_sequence,omitempty"`
-	TCPAck        uint32        `json:"tcp_ack,omitempty"`
-	Encapsulation Encapsulation `json:"encapsulation,omitempty"`
-	TunnelID      uint32        `json:"tunnel_id,omitempty"`
-	OuterFamily   uint8         `json:"outer_family,omitempty"`
-	OuterSrcAddr  netip.Addr    `json:"outer_src_addr,omitempty"`
-	OuterDstAddr  netip.Addr    `json:"outer_dst_addr,omitempty"`
-	OuterSrcPort  uint16        `json:"outer_src_port,omitempty"`
-	OuterDstPort  uint16        `json:"outer_dst_port,omitempty"`
-	NetnsCookie   uint64        `json:"netns_cookie,omitempty"`
-	CgroupID      uint64        `json:"cgroup_id,omitempty"`
-	CgroupIDs     []uint64      `json:"cgroup_ids,omitempty"`
-	Hooks         []string      `json:"hooks,omitempty"`
-	Interface     string        `json:"interface,omitempty"`
-	InterfaceIdx  uint32        `json:"interface_index,omitempty"`
-	Confidence    Confidence    `json:"confidence,omitempty"`
-	Evidence      []string      `json:"evidence,omitempty"`
-	SrcEndpoint   *Endpoint     `json:"src_endpoint,omitempty"`
-	DstEndpoint   *Endpoint     `json:"dst_endpoint,omitempty"`
-	Trace         *TraceContext `json:"trace,omitempty"`
-	SrcLabel      string        `json:"src_label,omitempty"`
-	DstLabel      string        `json:"dst_label,omitempty"`
-	Message       string        `json:"message,omitempty"`
+	SchemaVersion     int               `json:"schema_version"`
+	Kind              Kind              `json:"kind"`
+	SessionID         string            `json:"session_id,omitempty"`
+	AttachmentID      string            `json:"attachment_id,omitempty"`
+	Side              string            `json:"side,omitempty"`
+	Node              string            `json:"node,omitempty"`
+	Point             string            `json:"point,omitempty"`
+	Direction         Direction         `json:"direction,omitempty"`
+	MonotonicNS       uint64            `json:"monotonic_ns,omitempty"`
+	WallTime          time.Time         `json:"wall_time,omitempty"`
+	Sequence          uint64            `json:"sequence,omitempty"`
+	Lost              uint64            `json:"lost,omitempty"`
+	TransportLost     uint64            `json:"transport_lost,omitempty"`
+	Final             bool              `json:"final,omitempty"`
+	Complete          bool              `json:"complete,omitempty"`
+	Family            uint8             `json:"family,omitempty"`
+	Protocol          uint8             `json:"protocol,omitempty"`
+	SrcAddr           netip.Addr        `json:"src_addr,omitempty"`
+	DstAddr           netip.Addr        `json:"dst_addr,omitempty"`
+	SrcPort           uint16            `json:"src_port,omitempty"`
+	DstPort           uint16            `json:"dst_port,omitempty"`
+	PacketLength      uint32            `json:"packet_length,omitempty"`
+	TCPFlags          uint8             `json:"tcp_flags,omitempty"`
+	TCPSequence       uint32            `json:"tcp_sequence,omitempty"`
+	TCPAck            uint32            `json:"tcp_ack,omitempty"`
+	Encapsulation     Encapsulation     `json:"encapsulation,omitempty"`
+	TunnelID          uint32            `json:"tunnel_id,omitempty"`
+	OuterFamily       uint8             `json:"outer_family,omitempty"`
+	OuterSrcAddr      netip.Addr        `json:"outer_src_addr,omitempty"`
+	OuterDstAddr      netip.Addr        `json:"outer_dst_addr,omitempty"`
+	OuterSrcPort      uint16            `json:"outer_src_port,omitempty"`
+	OuterDstPort      uint16            `json:"outer_dst_port,omitempty"`
+	NetnsCookie       uint64            `json:"netns_cookie,omitempty"`
+	CgroupID          uint64            `json:"cgroup_id,omitempty"`
+	CgroupIDs         []uint64          `json:"cgroup_ids,omitempty"`
+	Hooks             []string          `json:"hooks,omitempty"`
+	Interface         string            `json:"interface,omitempty"`
+	InterfaceIdx      uint32            `json:"interface_index,omitempty"`
+	InterfaceKind     string            `json:"interface_kind,omitempty"`
+	InterfaceMode     string            `json:"interface_mode,omitempty"`
+	InterfaceMaster   string            `json:"interface_master,omitempty"`
+	InterfaceVRFTable uint32            `json:"interface_vrf_table,omitempty"`
+	Diagnostics       []HookDiagnostics `json:"diagnostics,omitempty"`
+	Confidence        Confidence        `json:"confidence,omitempty"`
+	Evidence          []string          `json:"evidence,omitempty"`
+	SrcEndpoint       *Endpoint         `json:"src_endpoint,omitempty"`
+	DstEndpoint       *Endpoint         `json:"dst_endpoint,omitempty"`
+	Trace             *TraceContext     `json:"trace,omitempty"`
+	SrcLabel          string            `json:"src_label,omitempty"`
+	DstLabel          string            `json:"dst_label,omitempty"`
+	Message           string            `json:"message,omitempty"`
+}
+
+func (o Observation) InterfaceDescription() string {
+	kind := o.InterfaceKind
+	if kind == "" {
+		kind = "pod-facing interface"
+	}
+	if o.InterfaceMode != "" {
+		kind += " (" + o.InterfaceMode + ")"
+	}
+	return kind
 }
 
 func (o Observation) Validate() error {

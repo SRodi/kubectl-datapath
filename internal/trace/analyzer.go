@@ -24,25 +24,27 @@ type EvidencePoint struct {
 }
 
 type DatapathView struct {
-	Source              model.Endpoint
-	SourceNode          string
-	Destination         model.Endpoint
-	DestinationNode     string
-	Focus               string
-	FocusDetail         string
-	AttemptSuperseded   bool
-	Connect             *EvidencePoint
-	ConnectKind         string
-	ConnectLabel        string
-	SourceBoundary      EvidencePoint
-	SourceTransit       *EvidencePoint
-	DestinationTransit  *EvidencePoint
-	DestinationBoundary EvidencePoint
-	TransitLabel        string
-	CrossNode           bool
-	CaptureComplete     bool
-	Diagnosis           string
-	Policies            []model.PolicyContext
+	Source               model.Endpoint
+	SourceNode           string
+	Destination          model.Endpoint
+	DestinationNode      string
+	Focus                string
+	FocusDetail          string
+	AttemptSuperseded    bool
+	Connect              *EvidencePoint
+	ConnectKind          string
+	ConnectLabel         string
+	SourceBoundary       EvidencePoint
+	SourceTransit        *EvidencePoint
+	DestinationTransit   *EvidencePoint
+	DestinationBoundary  EvidencePoint
+	SourceInterface      model.Observation
+	DestinationInterface model.Observation
+	TransitLabel         string
+	CrossNode            bool
+	CaptureComplete      bool
+	Diagnosis            string
+	Policies             []model.PolicyContext
 }
 
 type Analyzer struct {
@@ -558,6 +560,7 @@ func (a *Analyzer) Datapath() *DatapathView {
 			}
 		}
 	} else {
+		view.Focus = "selected pod traffic"
 		view.SourceBoundary = evidencePoint(healthByName["source/boundary"])
 		view.DestinationBoundary = evidencePoint(healthByName["destination/boundary"])
 	}
@@ -573,6 +576,12 @@ func (a *Analyzer) Datapath() *DatapathView {
 		sides = []string{"source", "dns"}
 	} else if a.mode() == model.TraceModePod {
 		sides = []string{"source", "destination"}
+	}
+	view.SourceInterface = a.boundaryInterface(sides[0])
+	view.DestinationInterface = a.boundaryInterface(sides[1])
+	if dnsFocus == nil && a.mode() == model.TraceModeService &&
+		a.active != nil && a.active.backendSYN != nil {
+		view.DestinationInterface = *a.active.backendSYN
 	}
 	if view.CrossNode {
 		sides = append(sides, "transit-source", "transit-destination")
@@ -659,6 +668,32 @@ func (a *Analyzer) diagramDestination() model.Endpoint {
 	return model.Endpoint{Kind: model.EndpointPod, Name: "ready Service backend"}
 }
 
+// Do not label a selected boundary using an arbitrary Service backend's link.
+func (a *Analyzer) boundaryInterface(side string) model.Observation {
+	var result model.Observation
+	for _, observation := range a.attachments {
+		if observation.Side != side {
+			continue
+		}
+		if result.AttachmentID != "" {
+			return model.Observation{}
+		}
+		result = observation
+	}
+	return result
+}
+
+func (a *Analyzer) Attachments() []model.Observation {
+	result := make([]model.Observation, 0, len(a.attachments))
+	for _, observation := range a.attachments {
+		result = append(result, observation)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].AttachmentID < result[j].AttachmentID
+	})
+	return result
+}
+
 func evidencePoint(health Health) EvidencePoint {
 	if health.State == "" {
 		return EvidencePoint{State: "NOT READY", Detail: "capture point is not ready"}
@@ -734,14 +769,14 @@ func diagnoseDatapath(view DatapathView, mode model.TraceMode, dnsFocus bool) st
 	if view.CrossNode && view.SourceBoundary.State == "OBSERVED" &&
 		view.SourceTransit != nil && view.SourceTransit.State == "NO EVIDENCE" {
 		return fmt.Sprintf(
-			"Evidence gap: %s crossed the source Pod boundary, but not the source-node underlay; gap is inside the source node between the source host veth and underlay egress.",
+			"Evidence gap: %s crossed the source Pod boundary, but not the source-node underlay; gap is inside the source node between the pod-facing interface and underlay egress.",
 			evidence,
 		)
 	}
 	if view.CrossNode && pointObserved(view.DestinationTransit) &&
 		view.DestinationBoundary.State == "NO EVIDENCE" {
 		return fmt.Sprintf(
-			"Evidence gap: %s reached %s underlay, but not the destination Pod boundary; gap is inside the destination node between underlay ingress and the backend host veth.",
+			"Evidence gap: %s reached %s underlay, but not the destination Pod boundary; gap is inside the destination node between underlay ingress and the pod-facing interface.",
 			evidence, view.DestinationNode,
 		)
 	}
@@ -824,7 +859,7 @@ func (a *Analyzer) Stages() []Stage {
 	}
 	if a.active != nil && len(a.active.sourceSYNs) > 0 {
 		source := a.active.sourceSYNs[0]
-		detail := "Initial SYN observed on the source host-side veth"
+		detail := "Initial SYN observed on the source pod-facing interface"
 		if len(a.active.sourceSYNs) > 1 {
 			delay := a.active.sourceSYNs[len(a.active.sourceSYNs)-1].WallTime.Sub(source.WallTime)
 			detail = fmt.Sprintf("%d SYN observations; latest retransmission after %s",

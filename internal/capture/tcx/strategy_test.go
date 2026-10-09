@@ -8,6 +8,21 @@ import (
 	"github.com/SRodi/kubectl-datapath/internal/model"
 )
 
+func TestObservationCarriesInterfaceMetadata(t *testing.T) {
+	for kind, mode := range map[string]string{"veth": "", "netkit": "L3"} {
+		target := capture.Target{
+			Interface: "pod-peer", InterfaceKind: kind, InterfaceMode: mode,
+			InterfaceMaster: "nk-vrf", InterfaceVRFTable: 100,
+		}
+		observation := observationFromRaw(target, bpfEvent{Kind: 1, Ifindex: 14, Direction: 1}, 0)
+		if observation.Point != "pod-boundary/tcx" || observation.InterfaceKind != kind ||
+			observation.InterfaceMode != mode || observation.InterfaceMaster != "nk-vrf" ||
+			observation.InterfaceVRFTable != 100 || observation.InterfaceIdx != 14 {
+			t.Fatalf("interface metadata lost: %+v", observation)
+		}
+	}
+}
+
 func TestObservationFromRawDecodesVXLANTransit(t *testing.T) {
 	raw := bpfEvent{
 		Kind: 3, MonotonicNs: 42, Ifindex: 7, PacketLength: 150,

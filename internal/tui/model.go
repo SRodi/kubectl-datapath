@@ -358,6 +358,7 @@ func (m Model) renderContent() string {
 			fmt.Fprintf(&builder, "  %-22s %-12s %s\n", health.Name, style.Render(health.State), subtleStyle.Render(health.Detail))
 		}
 		builder.WriteString("\n")
+		renderCaptureDetails(&builder, m.trace.Attachments())
 		if transit := m.trace.Transit(); transit != nil {
 			renderTransitDetails(&builder, transit, datapath)
 		}
@@ -468,7 +469,8 @@ func renderDatapath(builder *strings.Builder, datapath traceview.DatapathView, w
 		sourceHost = "hostNetNS"
 		destinationHost = "hostNetNS"
 	}
-	fmt.Fprintf(builder, "       └──%s source veth──> [%s]\n", captureMarker(datapath.SourceBoundary), sourceHost)
+	fmt.Fprintf(builder, "       └──%s source %s──> [%s]\n",
+		captureMarker(datapath.SourceBoundary), datapath.SourceInterface.InterfaceDescription(), sourceHost)
 	if datapath.CrossNode {
 		fmt.Fprintf(builder, "  transit: [srcHostNetNS] ──%s── %s ──%s──> [dstHostNetNS]\n",
 			captureMarker(dereferencePoint(datapath.SourceTransit)),
@@ -479,9 +481,10 @@ func renderDatapath(builder *strings.Builder, datapath traceview.DatapathView, w
 		builder.WriteString("  host: shared host network namespace\n")
 	}
 	fmt.Fprintf(builder, "  dstNode: %s\n", destinationNode)
-	fmt.Fprintf(builder, "    [%s] ──%s to destination Pod (host veth)──> [dstPodNetNS: %s]\n",
+	fmt.Fprintf(builder, "    [%s] ──%s to destination Pod (%s)──> [dstPodNetNS: %s]\n",
 		destinationHost,
 		captureMarker(datapath.DestinationBoundary),
+		datapath.DestinationInterface.InterfaceDescription(),
 		truncate(datapath.Destination.DisplayName(), podWidth),
 	)
 	builder.WriteString("  " + subtleStyle.Render("● observed  × attached, no matching evidence  ! incomplete  ○ not ready/unavailable") + "\n\n")
@@ -509,6 +512,35 @@ func renderDatapath(builder *strings.Builder, datapath traceview.DatapathView, w
 		}
 		builder.WriteString("  " + subtleStyle.Render("Configuration context only; this is not a packet-drop verdict.") + "\n\n")
 	}
+}
+
+func renderCaptureDetails(builder *strings.Builder, attachments []model.Observation) {
+	builder.WriteString(headerStyle.Render("Capture diagnostics") + "\n")
+	for _, attachment := range attachments {
+		kind := attachment.InterfaceKind
+		if kind == "" {
+			kind = "unknown kind"
+		} else if attachment.InterfaceMode != "" {
+			kind += " (" + attachment.InterfaceMode + ")"
+		}
+		fmt.Fprintf(builder, "  %s · %s · %s ifindex=%d · %s\n",
+			attachment.AttachmentID, attachment.Node, attachment.Interface, attachment.InterfaceIdx, kind)
+		if attachment.InterfaceMaster != "" {
+			fmt.Fprintf(builder, "    master=%s", attachment.InterfaceMaster)
+			if attachment.InterfaceVRFTable != 0 {
+				fmt.Fprintf(builder, " vrf-table=%d", attachment.InterfaceVRFTable)
+			}
+			builder.WriteString("\n")
+		}
+		if len(attachment.Diagnostics) == 0 {
+			builder.WriteString("    hook counters unavailable in this recording\n")
+		}
+		for _, counters := range attachment.Diagnostics {
+			fmt.Fprintf(builder, "    %s seen=%d parse-rejected=%d filtered=%d emitted=%d lost=%d\n",
+				counters.Hook, counters.Seen, counters.ParseRejected, counters.Filtered, counters.Emitted, counters.Lost)
+		}
+	}
+	builder.WriteString("  " + subtleStyle.Render("Counters cover all hook traffic, not just the displayed flow; parse rejection is not a packet drop.") + "\n\n")
 }
 
 func renderTransitDetails(
@@ -954,7 +986,7 @@ func endpointNameWithPort(endpoint model.Endpoint) string {
 }
 
 func podDirection(observation model.Observation) string {
-	if !strings.Contains(observation.Point, "veth") {
+	if !strings.HasPrefix(observation.Point, "pod-boundary/") && !strings.Contains(observation.Point, "veth") {
 		return string(observation.Direction)
 	}
 	switch observation.Direction {

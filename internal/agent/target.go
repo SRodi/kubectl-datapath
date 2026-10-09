@@ -87,7 +87,7 @@ func (r *TargetResolver) TargetForPodUID(podUID string) (Target, error) {
 	if len(pids) == 0 {
 		return Target{}, fmt.Errorf("no process found for Pod UID %s", podUID)
 	}
-	// Resolve the host veth through one Pod process, but collect every matching cgroup.
+	// Resolve the host peer through one Pod process, but collect every matching cgroup.
 	pid := pids[0]
 	podInterface, err := podPrimaryInterface(r.procRoot, pid)
 	if err != nil {

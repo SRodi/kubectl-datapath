@@ -9,6 +9,38 @@ import (
 	"github.com/SRodi/kubectl-datapath/internal/model"
 )
 
+func TestPodFocusAndInterfaceDiagnostics(t *testing.T) {
+	context := testContext()
+	context.Mode = model.TraceModePod
+	context.Destination = &context.Backends[0]
+	analyzer := NewAnalyzer()
+	analyzer.Observe(model.Observation{Kind: model.KindTraceContext, Trace: &context})
+	for _, side := range []string{"source", "destination"} {
+		analyzer.Observe(model.Observation{
+			Kind: model.KindStatus, Side: side, AttachmentID: side,
+			Interface: "nkh-" + side, InterfaceKind: "netkit", InterfaceMode: "L3",
+			Diagnostics: []model.HookDiagnostics{{Hook: "tcx/ingress", Seen: 4, Filtered: 4}},
+		})
+	}
+	view := analyzer.Datapath()
+	if view.Focus != "selected pod traffic" || view.SourceInterface.InterfaceDescription() != "netkit (L3)" ||
+		view.DestinationInterface.InterfaceDescription() != "netkit (L3)" ||
+		view.SourceBoundary.State != "NO EVIDENCE" {
+		t.Fatalf("incorrect pod view: %+v", view)
+	}
+	attachments := analyzer.Attachments()
+	if len(attachments) != 2 || attachments[0].Diagnostics[0].Filtered != 4 {
+		t.Fatalf("diagnostics missing: %+v", attachments)
+	}
+	analyzer.Observe(model.Observation{
+		Kind: model.KindStatus, Side: "destination", AttachmentID: "another",
+		Interface: "veth-another", InterfaceKind: "veth",
+	})
+	if got := analyzer.Datapath().DestinationInterface.InterfaceKind; got != "" {
+		t.Fatalf("ambiguous attachment kind was guessed: %q", got)
+	}
+}
+
 func TestAnalyzerLocatesTranslationAfterSourceBoundary(t *testing.T) {
 	analyzer := NewAnalyzer()
 	context := testContext()

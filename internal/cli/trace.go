@@ -116,12 +116,13 @@ func runPodPathTrace(
 	if err != nil {
 		return err
 	}
+	deliveryCtx, cleanup := traceStreamContext(ctx, streams)
 	defer func() {
-		traceErr = errors.Join(traceErr, closeAgentStreams(streams))
+		traceErr = errors.Join(traceErr, cleanup())
 	}()
-	observations, errors := mergeStreams(ctx, streams...)
-	observations = filterPodPathObservations(ctx, traceContext, observations)
-	observations = prependTraceContext(ctx, sessionID, traceContext, observations)
+	observations, errors := mergeStreams(deliveryCtx, streams...)
+	observations = filterPodPathObservations(deliveryCtx, traceContext, observations)
+	observations = prependTraceContext(deliveryCtx, sessionID, traceContext, observations)
 	title := source.Namespace + "/" + source.Name + " → " + destination.Namespace + "/" + destination.Name
 	return consume(command, ctx, title, observations, errors, options.noTUI)
 }
@@ -249,18 +250,19 @@ func runServiceTrace(
 	if err != nil {
 		return err
 	}
-	defer func() {
-		traceErr = errors.Join(traceErr, closeAgentStreams(streams))
-	}()
 	streams = append(streams, startPolicyContextStream(
 		command, ctx, client, sessionID, serviceTrace.Context, source, backends,
 	))
 	streams = append(streams, startServiceTopologyStream(
 		command, ctx, client, source, *serviceTrace.Context.Service, serviceTrace.Context.Backends,
 	))
-	observations, errors := mergeStreams(ctx, streams...)
-	observations = filterTraceObservations(ctx, serviceTrace.Context, observations)
-	observations = prependTraceContext(ctx, sessionID, serviceTrace.Context, observations)
+	deliveryCtx, cleanup := traceStreamContext(ctx, streams)
+	defer func() {
+		traceErr = errors.Join(traceErr, cleanup())
+	}()
+	observations, errors := mergeStreams(deliveryCtx, streams...)
+	observations = filterTraceObservations(deliveryCtx, serviceTrace.Context, observations)
+	observations = prependTraceContext(deliveryCtx, sessionID, serviceTrace.Context, observations)
 	title := source.Namespace + "/" + source.Name + " → " + serviceTrace.Context.Service.DisplayName()
 	return consume(command, ctx, title, observations, errors, options.noTUI)
 }

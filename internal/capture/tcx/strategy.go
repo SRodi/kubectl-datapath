@@ -7,8 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/netip"
+	"slices"
 	"sync"
 	"time"
 
@@ -24,17 +24,15 @@ import (
 
 type Strategy struct{}
 
-func (Strategy) Name() string { return "tcx-veth" }
+func (Strategy) Name() string { return "tcx" }
 
 func (Strategy) Open(ctx context.Context, target capture.Target) (capture.Session, error) {
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return nil, fmt.Errorf("remove memlock limit: %w", err)
 	}
-	iface, err := net.InterfaceByName(target.Interface)
-	if err != nil {
-		return nil, fmt.Errorf("resolve interface %q: %w", target.Interface, err)
+	if err := resolveInterface(&target); err != nil {
+		return nil, err
 	}
-	target.InterfaceIndex = uint32(iface.Index)
 	var objects bpfObjects
 	if err := loadBpfObjects(&objects, nil); err != nil {
 		return nil, fmt.Errorf("load BPF objects: %w", err)
@@ -43,7 +41,7 @@ func (Strategy) Open(ctx context.Context, target capture.Target) (capture.Sessio
 		return nil, openError(err, nil, &objects)
 	}
 	egress, err := link.AttachTCX(link.TCXOptions{
-		Interface: iface.Index,
+		Interface: int(target.InterfaceIndex),
 		Program:   objects.ObserveEgress,
 		Attach:    ebpf.AttachTCXEgress,
 		Anchor:    link.Head(),
@@ -52,7 +50,7 @@ func (Strategy) Open(ctx context.Context, target capture.Target) (capture.Sessio
 		return nil, openError(fmt.Errorf("attach TCX egress: %w", err), nil, &objects)
 	}
 	ingress, err := link.AttachTCX(link.TCXOptions{
-		Interface: iface.Index,
+		Interface: int(target.InterfaceIndex),
 		Program:   objects.ObserveIngress,
 		Attach:    ebpf.AttachTCXIngress,
 		Anchor:    link.Head(),
@@ -81,7 +79,7 @@ func (Strategy) Open(ctx context.Context, target capture.Target) (capture.Sessio
 		events:       make(chan model.Observation, 1024),
 		errors:       make(chan error, 1),
 		packetHooks:  []string{"tcx/ingress", "tcx/egress"},
-		packetPoint:  "host-veth/tcx",
+		packetPoint:  "pod-boundary/tcx",
 		transitPoint: "node-transit/tcx",
 		hookEvidence: "TCX hook",
 		done:         make(chan struct{}),
@@ -153,7 +151,11 @@ func (s *session) run(ctx context.Context) {
 	reporter.Add(1)
 	go func() {
 		defer reporter.Done()
-		reporterErrors <- s.reportLoss(ctx, reporterDone)
+		err := s.reportLoss(ctx, reporterDone)
+		reporterErrors <- err
+		if err != nil {
+			_ = s.reader.Close()
+		}
 	}()
 	defer func() {
 		close(reporterDone)
@@ -184,19 +186,24 @@ func (s *session) run(ctx context.Context) {
 
 	select {
 	case s.events <- model.Observation{
-		SchemaVersion: model.SchemaVersion,
-		Kind:          model.KindStatus,
-		SessionID:     s.target.SessionID,
-		AttachmentID:  s.target.AttachID,
-		Side:          s.target.Side,
-		Node:          s.target.Node,
-		WallTime:      time.Now(),
-		Interface:     s.target.Interface,
-		InterfaceIdx:  s.target.InterfaceIndex,
-		CgroupIDs:     append([]uint64(nil), s.target.CgroupIDs...),
-		Hooks:         hooks,
-		Confidence:    model.ConfidenceExact,
-		Message:       fmt.Sprintf("attachment ready: interface=%s hooks=%v cgroups=%d", s.target.Interface, hooks, len(s.target.CgroupIDs)),
+		SchemaVersion:     model.SchemaVersion,
+		Kind:              model.KindStatus,
+		SessionID:         s.target.SessionID,
+		AttachmentID:      s.target.AttachID,
+		Side:              s.target.Side,
+		Node:              s.target.Node,
+		WallTime:          time.Now(),
+		Interface:         s.target.Interface,
+		InterfaceIdx:      s.target.InterfaceIndex,
+		InterfaceKind:     s.target.InterfaceKind,
+		InterfaceMode:     s.target.InterfaceMode,
+		InterfaceMaster:   s.target.InterfaceMaster,
+		InterfaceVRFTable: s.target.InterfaceVRFTable,
+		Diagnostics:       emptyDiagnostics(s.packetHooks),
+		CgroupIDs:         append([]uint64(nil), s.target.CgroupIDs...),
+		Hooks:             hooks,
+		Confidence:        model.ConfidenceExact,
+		Message:           fmt.Sprintf("attachment ready: interface=%s hooks=%v cgroups=%d", s.target.Interface, hooks, len(s.target.CgroupIDs)),
 	}:
 	case <-ctx.Done():
 		return
@@ -231,28 +238,35 @@ func (s *session) finalStatus() error {
 	var sequence, lost uint64
 	sequenceErr := s.objects.Sequences.Lookup(&zero, &sequence)
 	lostErr := s.objects.Losses.Lookup(&zero, &lost)
+	diagnostics, diagnosticsErr := s.readDiagnostics()
 	objectErr := s.objects.Close()
 	if objectErr != nil {
 		s.addCloseError(fmt.Errorf("close BPF objects: %w", objectErr))
 	}
 	complete := s.runErr == nil && s.attachmentErr == nil &&
-		sequenceErr == nil && lostErr == nil && objectErr == nil
+		sequenceErr == nil && lostErr == nil && diagnosticsErr == nil && objectErr == nil
 	observation := model.Observation{
-		SchemaVersion: model.SchemaVersion,
-		Kind:          model.KindStatus,
-		SessionID:     s.target.SessionID,
-		AttachmentID:  s.target.AttachID,
-		Side:          s.target.Side,
-		Node:          s.target.Node,
-		WallTime:      time.Now(),
-		Sequence:      sequence,
-		Lost:          lost,
-		Final:         true,
-		Complete:      complete,
-		Interface:     s.target.Interface,
-		InterfaceIdx:  s.target.InterfaceIndex,
-		Confidence:    model.ConfidenceExact,
-		Message:       "capture stopped; final sequence and loss counters reported",
+		SchemaVersion:     model.SchemaVersion,
+		Kind:              model.KindStatus,
+		SessionID:         s.target.SessionID,
+		AttachmentID:      s.target.AttachID,
+		Side:              s.target.Side,
+		Node:              s.target.Node,
+		WallTime:          time.Now(),
+		Sequence:          sequence,
+		Lost:              lost,
+		Final:             true,
+		Complete:          complete,
+		Interface:         s.target.Interface,
+		InterfaceIdx:      s.target.InterfaceIndex,
+		InterfaceKind:     s.target.InterfaceKind,
+		InterfaceMode:     s.target.InterfaceMode,
+		InterfaceMaster:   s.target.InterfaceMaster,
+		InterfaceVRFTable: s.target.InterfaceVRFTable,
+		Hooks:             append([]string(nil), s.packetHooks...),
+		Diagnostics:       diagnostics,
+		Confidence:        model.ConfidenceExact,
+		Message:           "capture stopped; final sequence and loss counters reported",
 	}
 	if !complete {
 		observation.Message = "capture stopped with incomplete final counters or cleanup"
@@ -264,16 +278,17 @@ func (s *session) finalStatus() error {
 	case <-timer.C:
 		return errors.Join(
 			fmt.Errorf("emit final capture status: event queue remained blocked"),
-			sequenceErr, lostErr, s.closeError(),
+			sequenceErr, lostErr, diagnosticsErr, s.closeError(),
 		)
 	}
-	return errors.Join(sequenceErr, lostErr, s.closeError())
+	return errors.Join(sequenceErr, lostErr, diagnosticsErr, s.closeError())
 }
 
 func (s *session) reportLoss(ctx context.Context, done <-chan struct{}) error {
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	var reported uint64
+	previous := emptyDiagnostics(s.packetHooks)
 	for {
 		select {
 		case <-ctx.Done():
@@ -286,30 +301,40 @@ func (s *session) reportLoss(ctx context.Context, done <-chan struct{}) error {
 			if err := s.objects.Losses.Lookup(&zero, &lost); err != nil {
 				return fmt.Errorf("read loss counter: %w", err)
 			}
-			if lost == reported {
+			diagnostics, err := s.readDiagnostics()
+			if err != nil {
+				return err
+			}
+			if lost == reported && slices.Equal(diagnostics, previous) {
 				continue
 			}
 			reported = lost
+			previous = diagnostics
 			hooks := append([]string(nil), s.packetHooks...)
 			if s.target.CaptureConnect {
 				hooks = append(hooks, "fentry/__sys_connect")
 			}
 			select {
 			case s.events <- model.Observation{
-				SchemaVersion: model.SchemaVersion,
-				Kind:          model.KindStatus,
-				SessionID:     s.target.SessionID,
-				AttachmentID:  s.target.AttachID,
-				Side:          s.target.Side,
-				Node:          s.target.Node,
-				WallTime:      time.Now(),
-				Lost:          lost,
-				Interface:     s.target.Interface,
-				InterfaceIdx:  s.target.InterfaceIndex,
-				CgroupIDs:     append([]uint64(nil), s.target.CgroupIDs...),
-				Hooks:         hooks,
-				Confidence:    model.ConfidenceExact,
-				Message:       fmt.Sprintf("event loss=%d", lost),
+				SchemaVersion:     model.SchemaVersion,
+				Kind:              model.KindStatus,
+				SessionID:         s.target.SessionID,
+				AttachmentID:      s.target.AttachID,
+				Side:              s.target.Side,
+				Node:              s.target.Node,
+				WallTime:          time.Now(),
+				Lost:              lost,
+				Interface:         s.target.Interface,
+				InterfaceIdx:      s.target.InterfaceIndex,
+				InterfaceKind:     s.target.InterfaceKind,
+				InterfaceMode:     s.target.InterfaceMode,
+				InterfaceMaster:   s.target.InterfaceMaster,
+				InterfaceVRFTable: s.target.InterfaceVRFTable,
+				Diagnostics:       diagnostics,
+				CgroupIDs:         append([]uint64(nil), s.target.CgroupIDs...),
+				Hooks:             hooks,
+				Confidence:        model.ConfidenceExact,
+				Message:           fmt.Sprintf("capture diagnostics; event loss=%d", lost),
 			}:
 			case <-ctx.Done():
 				return nil
@@ -322,7 +347,7 @@ func (s *session) reportLoss(ctx context.Context, done <-chan struct{}) error {
 
 func observationFromRaw(target capture.Target, raw bpfEvent, wallOffset int64) model.Observation {
 	return observationFromRawWithHook(
-		target, raw, wallOffset, "host-veth/tcx", "node-transit/tcx", "TCX hook",
+		target, raw, wallOffset, "pod-boundary/tcx", "node-transit/tcx", "TCX hook",
 	)
 }
 
@@ -345,31 +370,35 @@ func observationFromRawWithHook(
 		evidence = []string{"route-selected interface", hookEvidence, "selected inner tuple"}
 	}
 	observation := model.Observation{
-		SchemaVersion: model.SchemaVersion,
-		Kind:          kind,
-		SessionID:     target.SessionID,
-		AttachmentID:  target.AttachID,
-		Side:          target.Side,
-		Node:          target.Node,
-		Point:         point,
-		MonotonicNS:   raw.MonotonicNs,
-		WallTime:      time.Unix(0, wallOffset+int64(raw.MonotonicNs)),
-		Sequence:      raw.Sequence,
-		Lost:          raw.Lost,
-		Family:        raw.Family,
-		Protocol:      raw.Protocol,
-		DstAddr:       decodeAddress(raw.Family, raw.DstAddr),
-		SrcPort:       raw.SrcPort,
-		DstPort:       raw.DstPort,
-		PacketLength:  raw.PacketLength,
-		TCPFlags:      raw.TcpFlags,
-		TCPSequence:   raw.TcpSequence,
-		TCPAck:        raw.TcpAck,
-		CgroupID:      raw.CgroupId,
-		Interface:     target.Interface,
-		InterfaceIdx:  raw.Ifindex,
-		Confidence:    model.ConfidenceExact,
-		Evidence:      evidence,
+		SchemaVersion:     model.SchemaVersion,
+		Kind:              kind,
+		SessionID:         target.SessionID,
+		AttachmentID:      target.AttachID,
+		Side:              target.Side,
+		Node:              target.Node,
+		Point:             point,
+		MonotonicNS:       raw.MonotonicNs,
+		WallTime:          time.Unix(0, wallOffset+int64(raw.MonotonicNs)),
+		Sequence:          raw.Sequence,
+		Lost:              raw.Lost,
+		Family:            raw.Family,
+		Protocol:          raw.Protocol,
+		DstAddr:           decodeAddress(raw.Family, raw.DstAddr),
+		SrcPort:           raw.SrcPort,
+		DstPort:           raw.DstPort,
+		PacketLength:      raw.PacketLength,
+		TCPFlags:          raw.TcpFlags,
+		TCPSequence:       raw.TcpSequence,
+		TCPAck:            raw.TcpAck,
+		CgroupID:          raw.CgroupId,
+		Interface:         target.Interface,
+		InterfaceIdx:      raw.Ifindex,
+		InterfaceKind:     target.InterfaceKind,
+		InterfaceMode:     target.InterfaceMode,
+		InterfaceMaster:   target.InterfaceMaster,
+		InterfaceVRFTable: target.InterfaceVRFTable,
+		Confidence:        model.ConfidenceExact,
+		Evidence:          evidence,
 	}
 	if kind == model.KindPacket || kind == model.KindTransit {
 		observation.SrcAddr = decodeAddress(raw.Family, raw.SrcAddr)

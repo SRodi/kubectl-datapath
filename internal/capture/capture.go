@@ -8,16 +8,20 @@ import (
 )
 
 type Target struct {
-	Interface      string
-	InterfaceIndex uint32
-	CgroupIDs      []uint64
-	CaptureConnect bool
-	SessionID      string
-	AttachID       string
-	Side           string
-	Node           string
-	Transit        bool
-	FlowAddresses  []netip.Addr
+	Interface         string
+	InterfaceIndex    uint32
+	InterfaceKind     string
+	InterfaceMode     string
+	InterfaceMaster   string
+	InterfaceVRFTable uint32
+	CgroupIDs         []uint64
+	CaptureConnect    bool
+	SessionID         string
+	AttachID          string
+	Side              string
+	Node              string
+	Transit           bool
+	FlowAddresses     []netip.Addr
 }
 
 type Session interface {

@@ -13,6 +13,46 @@ import (
 	traceview "github.com/SRodi/kubectl-datapath/internal/trace"
 )
 
+func TestNetkitLabelsDiagnosticsAndPacketDirections(t *testing.T) {
+	attachment := model.Observation{
+		AttachmentID: "source", Node: "worker-a", Interface: "nkh-test", InterfaceIdx: 14,
+		InterfaceKind: "netkit", InterfaceMode: "L3", InterfaceMaster: "nk-vrf", InterfaceVRFTable: 100,
+		Diagnostics: []model.HookDiagnostics{{
+			Hook: "tcx/ingress", Seen: 7, ParseRejected: 2, Filtered: 1, Emitted: 3, Lost: 1,
+		}},
+	}
+	var builder strings.Builder
+	renderDatapath(&builder, traceview.DatapathView{
+		SourceInterface: attachment, DestinationInterface: attachment,
+		SourceBoundary: traceview.EvidencePoint{State: "OBSERVED"},
+	}, 0)
+	renderCaptureDetails(&builder, []model.Observation{attachment})
+	output := builder.String()
+	for _, expected := range []string{
+		"source netkit (L3)", "to destination Pod (netkit (L3))", "nkh-test ifindex=14",
+		"master=nk-vrf vrf-table=100", "tcx/ingress seen=7 parse-rejected=2 filtered=1 emitted=3 lost=1",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("missing %q in:\n%s", expected, output)
+		}
+	}
+	if strings.Contains(output, "veth") {
+		t.Fatalf("netkit mislabeled as veth:\n%s", output)
+	}
+	for _, point := range []string{"pod-boundary/tcx", "pod-boundary/tc", "host-veth/tcx", "host-veth/tc"} {
+		for direction, want := range map[model.Direction]string{
+			model.DirectionIngress: "from-pod", model.DirectionEgress: "to-pod",
+		} {
+			if got := podDirection(model.Observation{Point: point, Direction: direction}); got != want {
+				t.Fatalf("%s %s: got %q, want %q", point, direction, got, want)
+			}
+		}
+	}
+	if got := podDirection(model.Observation{Point: "node-transit/tcx", Direction: model.DirectionIngress}); got != "ingress" {
+		t.Fatalf("transit direction changed: %s", got)
+	}
+}
+
 func TestViewShowsHonestStatus(t *testing.T) {
 	observations := make(chan model.Observation, 1)
 	errors := make(chan error, 1)
@@ -209,7 +249,7 @@ func TestDatapathVisualizationMarksMissingBackendEvidence(t *testing.T) {
 	view := current.(Model).View()
 	for _, expected := range []string{
 		"Datapath evidence",
-		"● source veth",
+		"● source pod-facing interface",
 		"× to destination Pod",
 		"× connect intent",
 		"shared host network namespace",
@@ -391,7 +431,7 @@ func TestDatapathVisualizationPrioritizesNewerBlockedDNS(t *testing.T) {
 	for _, expected := range []string{
 		"Latest focus: DNS prerequisite",
 		"newer unresolved DNS query",
-		"● source veth",
+		"● source pod-facing interface",
 		"transit: [srcHostNetNS] ──×──",
 		"gap is inside the source node",
 		"Latest backend attempt · historical",
@@ -792,7 +832,7 @@ func TestViewShowsVXLANNodeTransitSeparately(t *testing.T) {
 		"Datapath evidence",
 		"srcNode: worker-a",
 		"[srcPodNetNS: client.demo]",
-		"source veth",
+		"source pod-facing interface",
 		"transit: [srcHostNetNS]",
 		"VXLAN vni=1",
 		"[dstHostNetNS]",

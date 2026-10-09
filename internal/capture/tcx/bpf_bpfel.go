@@ -49,6 +49,15 @@ type bpfEvent struct {
 	_             [2]byte
 }
 
+type bpfPacketCounters struct {
+	_             structs.HostLayout
+	Seen          uint64
+	ParseRejected uint64
+	Filtered      uint64
+	Emitted       uint64
+	Lost          uint64
+}
+
 // Names of all BPF objects in the ELF.
 //
 // Used for safe lookups in a Collection or CollectionSpec.
@@ -57,6 +66,7 @@ const (
 	bpfMapEvents          = "events"
 	bpfMapFlowAddresses   = "flow_addresses"
 	bpfMapLosses          = "losses"
+	bpfMapPacketCounters  = "packet_counters"
 	bpfMapScratchEvents   = "scratch_events"
 	bpfMapSequences       = "sequences"
 	bpfMapTargetCgroups   = "target_cgroups"
@@ -117,13 +127,14 @@ type bpfProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type bpfMapSpecs struct {
-	CaptureModes  *ebpf.MapSpec `ebpf:"capture_modes"`
-	Events        *ebpf.MapSpec `ebpf:"events"`
-	FlowAddresses *ebpf.MapSpec `ebpf:"flow_addresses"`
-	Losses        *ebpf.MapSpec `ebpf:"losses"`
-	ScratchEvents *ebpf.MapSpec `ebpf:"scratch_events"`
-	Sequences     *ebpf.MapSpec `ebpf:"sequences"`
-	TargetCgroups *ebpf.MapSpec `ebpf:"target_cgroups"`
+	CaptureModes   *ebpf.MapSpec `ebpf:"capture_modes"`
+	Events         *ebpf.MapSpec `ebpf:"events"`
+	FlowAddresses  *ebpf.MapSpec `ebpf:"flow_addresses"`
+	Losses         *ebpf.MapSpec `ebpf:"losses"`
+	PacketCounters *ebpf.MapSpec `ebpf:"packet_counters"`
+	ScratchEvents  *ebpf.MapSpec `ebpf:"scratch_events"`
+	Sequences      *ebpf.MapSpec `ebpf:"sequences"`
+	TargetCgroups  *ebpf.MapSpec `ebpf:"target_cgroups"`
 }
 
 // bpfVariableSpecs contains global variables before they are loaded into the kernel.
@@ -153,13 +164,14 @@ func (o *bpfObjects) Close() error {
 //
 // It can be passed to loadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type bpfMaps struct {
-	CaptureModes  *ebpf.Map `ebpf:"capture_modes"`
-	Events        *ebpf.Map `ebpf:"events"`
-	FlowAddresses *ebpf.Map `ebpf:"flow_addresses"`
-	Losses        *ebpf.Map `ebpf:"losses"`
-	ScratchEvents *ebpf.Map `ebpf:"scratch_events"`
-	Sequences     *ebpf.Map `ebpf:"sequences"`
-	TargetCgroups *ebpf.Map `ebpf:"target_cgroups"`
+	CaptureModes   *ebpf.Map `ebpf:"capture_modes"`
+	Events         *ebpf.Map `ebpf:"events"`
+	FlowAddresses  *ebpf.Map `ebpf:"flow_addresses"`
+	Losses         *ebpf.Map `ebpf:"losses"`
+	PacketCounters *ebpf.Map `ebpf:"packet_counters"`
+	ScratchEvents  *ebpf.Map `ebpf:"scratch_events"`
+	Sequences      *ebpf.Map `ebpf:"sequences"`
+	TargetCgroups  *ebpf.Map `ebpf:"target_cgroups"`
 }
 
 func (m *bpfMaps) Close() error {
@@ -168,6 +180,7 @@ func (m *bpfMaps) Close() error {
 		m.Events,
 		m.FlowAddresses,
 		m.Losses,
+		m.PacketCounters,
 		m.ScratchEvents,
 		m.Sequences,
 		m.TargetCgroups,

@@ -91,14 +91,32 @@ idealized packet-delivery promise.
 | Observation point | Proves | Does not prove |
 |---|---|---|
 | `connect()` entry | Destination supplied by the application | Successful connection or packet transmission |
-| Source host-veth | Packet crossed the selected Pod boundary | Packet passed every source-node policy or routing hook |
+| Source host-side peer | Packet crossed the selected Pod boundary | Packet passed every source-node policy or routing hook |
 | Source underlay | Matching packet reached the selected node interface | Remote-node arrival |
 | Destination underlay | Matching packet was visible on the destination node interface | Delivery to the destination Pod |
-| Destination host-veth | Matching packet reached that Pod boundary | Application acceptance or processing |
+| Destination host-side peer | Matching packet reached that Pod boundary | Application acceptance or processing |
 
 Capture programs attach at explicit kernel points. Other CNI programs may run
 before or after them. The UI therefore says “observed” and “no matching
 evidence,” not “delivered” and “dropped.”
+
+The diagrams illustrate veth-based paths; live interface identity is not
+inferred from those examples. Pod peer discovery follows `iflink`, and
+rtnetlink identifies link kind, netkit L2/L3 mode, master, and VRF table.
+The same TCX/classic TC strategy can observe netkit peers where the packet
+path traverses those hooks. It does not attach netkit-specific BPF programs.
+Packet points are named `pod-boundary/tcx` or `pod-boundary/tc`. Replay still
+recognizes legacy `host-veth/*` points and their host-relative directions,
+but does not infer link kind from a historical point or interface name.
+
+Each packet hook has per-CPU counters for invocations, parser rejection,
+address-filter rejection, successful ring submissions, and ring loss.
+Periodic status messages carry aggregated counters without consuming packet
+sequence numbers; final snapshots follow hook detachment. They distinguish
+capture failure modes, not forwarding verdicts. A zero invocation count is
+different from a parser/filter rejection, and missing legacy counters are
+unavailable rather than zero. These additive schema-version-1 metadata fields
+survive NDJSON recording and replay.
 
 ## Service and DNS translation
 
@@ -157,11 +175,14 @@ client tuple from satisfying the latest path.
 
 ### Current versus historical evidence
 
-The primary map follows the newest relevant activity:
+For Service traces, the primary map follows the newest relevant activity:
 
 1. newer unresolved DNS activity;
 2. otherwise, the newest TCP attempt;
 3. older attempts remain timestamped history.
+
+Pod-to-Pod traces instead summarize selected-pair traffic across protocols
+and directions. Their focus is `selected pod traffic`, not a TCP attempt.
 
 Event loss changes a missing point to **incomplete**. Cross-node events retain
 node-local monotonic order; clocks from different nodes are never used to
@@ -173,6 +194,8 @@ by ring-buffer loss is reported separately as log-transport loss.
 
 During shutdown, the agent detaches capture hooks, reads the final sequence and
 loss counters, then emits a terminal status for every attachment. The client
+stops agents on interruption while keeping the NDJSON delivery pipeline alive
+to drain their final counters before returning. The client
 checks that all expected attachments supplied a complete terminal status before
 accepting a natural end of the log stream. Missing or incomplete status is
 reported as incomplete evidence, including loss at the end of a trace where no

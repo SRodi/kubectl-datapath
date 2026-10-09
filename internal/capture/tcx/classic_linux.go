@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
-	"net"
 
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
@@ -22,17 +21,15 @@ import (
 
 type ClassicStrategy struct{}
 
-func (ClassicStrategy) Name() string { return "tc-clsact-veth" }
+func (ClassicStrategy) Name() string { return "tc-clsact" }
 
 func (ClassicStrategy) Open(ctx context.Context, target capture.Target) (capture.Session, error) {
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return nil, fmt.Errorf("remove memlock limit: %w", err)
 	}
-	iface, err := net.InterfaceByName(target.Interface)
-	if err != nil {
-		return nil, fmt.Errorf("resolve interface %q: %w", target.Interface, err)
+	if err := resolveInterface(&target); err != nil {
+		return nil, err
 	}
-	target.InterfaceIndex = uint32(iface.Index)
 	var objects bpfObjects
 	if err := loadBpfObjects(&objects, nil); err != nil {
 		return nil, fmt.Errorf("load BPF objects: %w", err)
@@ -40,14 +37,14 @@ func (ClassicStrategy) Open(ctx context.Context, target capture.Target) (capture
 	if err := configureCaptureObjects(&objects, target); err != nil {
 		return nil, openError(err, nil, &objects)
 	}
-	if err := ensureClsact(iface.Index); err != nil {
+	if err := ensureClsact(int(target.InterfaceIndex)); err != nil {
 		return nil, openError(err, nil, &objects)
 	}
-	ingress := classicFilter(iface.Index, netlink.HANDLE_MIN_INGRESS, objects.ObserveIngress.FD(), target)
+	ingress := classicFilter(int(target.InterfaceIndex), netlink.HANDLE_MIN_INGRESS, objects.ObserveIngress.FD(), target)
 	if err := netlink.FilterAdd(ingress); err != nil {
 		return nil, openError(fmt.Errorf("attach classic TC ingress: %w", err), nil, &objects)
 	}
-	egress := classicFilter(iface.Index, netlink.HANDLE_MIN_EGRESS, objects.ObserveEgress.FD(), target)
+	egress := classicFilter(int(target.InterfaceIndex), netlink.HANDLE_MIN_EGRESS, objects.ObserveEgress.FD(), target)
 	if err := netlink.FilterAdd(egress); err != nil {
 		return nil, openError(
 			fmt.Errorf("attach classic TC egress: %w", err),
@@ -78,7 +75,7 @@ func (ClassicStrategy) Open(ctx context.Context, target capture.Target) (capture
 		events:       make(chan model.Observation, 1024),
 		errors:       make(chan error, 1),
 		packetHooks:  []string{"tc/ingress", "tc/egress"},
-		packetPoint:  "host-veth/tc",
+		packetPoint:  "pod-boundary/tc",
 		transitPoint: "node-transit/tc",
 		hookEvidence: "classic TC hook",
 		done:         make(chan struct{}),

@@ -26,7 +26,7 @@ KREW_LOCAL_MANIFEST ?= dist/datapath.yaml
 	architecture-diagrams check-architecture-diagrams \
 	docker-build docker-push print-registry-image kind-load image-pull-secret \
 	kind-kindnet-up kind-flannel-up kind-cilium-up kind-calico-up kind-down \
-	e2e-kindnet e2e-flannel e2e-cilium e2e-calico e2e-all \
+	e2e-kindnet e2e-flannel e2e-cilium e2e-calico e2e-netkit e2e-all \
 	krew-local-package krew-local-install krew-local-reinstall krew-local-uninstall
 
 generate:
@@ -186,6 +186,9 @@ e2e-cilium:
 
 e2e-calico:
 	CNI=calico ./scripts/e2e-test.sh
+
+e2e-netkit:
+	bash ./scripts/e2e-netkit.sh
 
 e2e-all: e2e-kindnet e2e-flannel e2e-cilium e2e-calico
 
