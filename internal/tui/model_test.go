@@ -124,37 +124,6 @@ func TestTraceConnectionKeySeparatesReusedClientPorts(t *testing.T) {
 	}
 }
 
-func TestActiveAttemptPacketKeyIncludesEstablishedTraffic(t *testing.T) {
-	source := netip.MustParseAddr("10.0.0.10")
-	backend := netip.MustParseAddr("10.0.1.20")
-	context := model.TraceContext{
-		Mode: model.TraceModeService,
-		Source: model.Endpoint{
-			Kind: model.EndpointPod, Namespace: "demo", Name: "frontend", Address: source,
-		},
-		Backends: []model.Endpoint{{
-			Kind: model.EndpointPod, Namespace: "demo", Name: "backend", Address: backend,
-		}},
-	}
-	attempts := []traceview.AttemptSummary{{
-		Protocol: 6, SourceAddr: source, SourcePort: 40000, InitialSequence: 100, Active: true,
-	}}
-	request := model.Observation{
-		Protocol: 6, SrcAddr: source, DstAddr: backend, SrcPort: 40000, DstPort: 80,
-		TCPFlags: 0x18, TCPSequence: 101, TCPAck: 500,
-	}
-	response := model.Observation{
-		Protocol: 6, SrcAddr: backend, DstAddr: source, SrcPort: 80, DstPort: 40000,
-		TCPFlags: 0x18, TCPSequence: 500, TCPAck: 140,
-	}
-	expected := attemptDisplayKey(6, source, 40000, 100)
-	for _, observation := range []model.Observation{request, response} {
-		if key := activeAttemptPacketKey(observation, context, attempts); key != expected {
-			t.Fatalf("established packet key = %q, want %q", key, expected)
-		}
-	}
-}
-
 func TestViewShowsServiceTranslationPath(t *testing.T) {
 	observations := make(chan model.Observation, 1)
 	errors := make(chan error, 1)

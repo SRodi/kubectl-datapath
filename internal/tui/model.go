@@ -195,15 +195,7 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				attempts := m.trace.Attempts()
 				traceKey := traceConnectionKey(message.observation, *m.traceContext)
-				if traceKey == "" && m.traceContext.Mode == model.TraceModeService {
-					traceKey = activeAttemptPacketKey(
-						message.observation,
-						*m.traceContext,
-						attempts,
-					)
-				}
 				if traceKey != "" {
-					m.tracePackets[traceKey] = append(m.tracePackets[traceKey], message.observation)
 					if m.traceContext.Mode == model.TraceModeService {
 						if len(attempts) > 0 {
 							active := attempts[0]
@@ -217,13 +209,16 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 							}
 							m.activeTraceSeen = active.Started
 						}
-					} else if m.activeTraceFlow == "" || message.observation.WallTime.After(m.activeTraceSeen) {
-						if traceKey != m.activeTraceFlow {
-							m.activeTraceFlow = traceKey
-							m.viewOffset = 0
-							m.followView = false
+					} else {
+						m.tracePackets[traceKey] = append(m.tracePackets[traceKey], message.observation)
+						if m.activeTraceFlow == "" || message.observation.WallTime.After(m.activeTraceSeen) {
+							if traceKey != m.activeTraceFlow {
+								m.activeTraceFlow = traceKey
+								m.viewOffset = 0
+								m.followView = false
+							}
+							m.activeTraceSeen = message.observation.WallTime
 						}
-						m.activeTraceSeen = message.observation.WallTime
 					}
 				}
 			} else if !m.hasActiveFlow || message.observation.WallTime.After(m.activeFlowSeen) {
@@ -708,6 +703,9 @@ type packetRow struct {
 
 func (m Model) currentPackets() []model.Observation {
 	if m.traceContext != nil {
+		if m.traceContext.Mode == model.TraceModeService {
+			return serviceAttemptPackets(m.packets, *m.traceContext, m.activeTraceFlow)
+		}
 		return append([]model.Observation(nil), m.tracePackets[m.activeTraceFlow]...)
 	}
 	if !m.hasActiveFlow {
@@ -742,38 +740,46 @@ func traceConnectionKey(observation model.Observation, context model.TraceContex
 	return ""
 }
 
-func activeAttemptPacketKey(
-	observation model.Observation,
+func serviceAttemptPackets(
+	packets map[flow.Key][]model.Observation,
 	context model.TraceContext,
-	attempts []traceview.AttemptSummary,
-) string {
-	if observation.Protocol != 6 {
-		return ""
+	selected string,
+) []model.Observation {
+	if selected == "" {
+		return nil
 	}
-	var sourceAddress netip.Addr
-	var sourcePort uint16
-	switch {
-	case sourceEndpoint(observation.SrcEndpoint, observation.SrcAddr, context.Source):
-		sourceAddress = observation.SrcAddr
-		sourcePort = observation.SrcPort
-	case sourceEndpoint(observation.DstEndpoint, observation.DstAddr, context.Source):
-		sourceAddress = observation.DstAddr
-		sourcePort = observation.DstPort
-	default:
-		return ""
+	type stream struct {
+		node, attachment, side string
 	}
-	for _, attempt := range attempts {
-		if attempt.Active && attempt.Protocol == observation.Protocol &&
-			attempt.SourceAddr == sourceAddress && attempt.SourcePort == sourcePort {
-			return attemptDisplayKey(
-				attempt.Protocol,
-				attempt.SourceAddr,
-				attempt.SourcePort,
-				attempt.InitialSequence,
-			)
+	var result []model.Observation
+	for _, observations := range packets {
+		byStream := make(map[stream][]model.Observation)
+		for _, observation := range observations {
+			if serviceAttemptPacket(observation, context) {
+				key := stream{observation.Node, observation.AttachmentID, observation.Side}
+				byStream[key] = append(byStream[key], observation)
+			}
+		}
+		for _, observations := range byStream {
+			sort.SliceStable(observations, func(i, j int) bool {
+				return observationBefore(observations[i], observations[j])
+			})
+			key := ""
+			for _, observation := range observations {
+				// Each boundary's handshake identifies its attempt independently of
+				// the source log stream. Recompute from retained packets so late
+				// handshakes can associate earlier arrivals without comparing nodes' clocks.
+				if observation.TCPFlags&0x02 != 0 {
+					key = traceConnectionKey(observation, context)
+				}
+				if key == selected ||
+					(key == "" && traceConnectionKey(observation, context) == selected) {
+					result = append(result, observation)
+				}
+			}
 		}
 	}
-	return ""
+	return result
 }
 
 func attemptDisplayKey(protocol uint8, source netip.Addr, sourcePort uint16, initialSequence uint32) string {

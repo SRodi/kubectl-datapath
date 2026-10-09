@@ -181,6 +181,17 @@ For Service traces, the primary map follows the newest relevant activity:
 2. otherwise, the newest TCP attempt;
 3. older attempts remain timestamped history.
 
+The Service packet list is reconstructed from retained observations using
+each attachment's local chronology and bidirectional wire tuple. SYN or
+SYN-ACK evidence identifies the attempt at that boundary; subsequent packets
+belong to it until another handshake identifies a different attempt.
+Backend logs may arrive before source logs without losing ACK, data, or FIN
+observations from the eventual attempt view. Late handshakes can associate
+previously received packets. Packets without identifying handshake evidence
+at their boundary are retained but are not guessed into the active attempt.
+This keeps reused client ports separate without ordering different nodes'
+clocks or assuming their log streams arrive together.
+
 Pod-to-Pod traces instead summarize selected-pair traffic across protocols
 and directions. Their focus is `selected pod traffic`, not a TCP attempt.
 
