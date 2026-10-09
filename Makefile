@@ -22,7 +22,7 @@ GHCR_TOKEN ?= $(shell gh auth token 2>/dev/null)
 GORELEASER_VERSION ?= v2.18.2
 KREW_LOCAL_MANIFEST ?= dist/datapath.yaml
 
-.PHONY: generate generate-bpf build test vet fmt check clean ci-unit \
+.PHONY: generate build test vet fmt check clean ci-unit \
 	architecture-diagrams check-architecture-diagrams \
 	docker-build docker-push print-registry-image kind-load image-pull-secret \
 	kind-kindnet-up kind-flannel-up kind-cilium-up kind-calico-up kind-down \
@@ -30,9 +30,6 @@ KREW_LOCAL_MANIFEST ?= dist/datapath.yaml
 	krew-local-package krew-local-install krew-local-reinstall krew-local-uninstall
 
 generate:
-	go generate ./...
-
-generate-bpf:
 	docker run --rm --platform $(BPF_GENERATOR_PLATFORM) \
 		-e HOST_UID=$(shell id -u) -e HOST_GID=$(shell id -g) \
 		-v "$(CURDIR):/src" -w /src $(BPF_GENERATOR_IMAGE) \
@@ -53,7 +50,7 @@ fmt:
 check: test vet
 	@test -z "$$(gofmt -l $$(find . -name '*.go' -not -path './internal/capture/tcx/bpf_*'))"
 
-ci-unit: generate-bpf
+ci-unit: generate
 	git diff --exit-code
 	$(MAKE) check-architecture-diagrams
 	$(MAKE) check
