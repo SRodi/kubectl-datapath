@@ -11,6 +11,8 @@ CALICO_VERSION ?= v3.32.2
 FLANNEL_VERSION ?= v0.28.9
 FLANNEL_MANIFEST_SHA256 ?= 1c06a15a771009c263bdb1f51c928af46f7606fe969f3963652167938d536aaa
 CALICO_MANIFEST_SHA256 ?= a8c828a06a87c629a282ebbc424895b77f3a030251993e41ea400a743675bb02
+# Calico's default IP-in-IP is not decoded; CrossSubnet routes same-subnet Kind nodes natively.
+CALICO_IPIP_MODE ?= CrossSubnet
 CNI_PLUGINS_VERSION ?= v1.9.1
 CNI_PLUGINS_ARCH ?= amd64
 CNI_PLUGINS_SHA256 ?= b98f74a0f8522f0a83867178729c1aa70f2158f90c45a2ca8fa791db1c76b303
@@ -130,6 +132,7 @@ image-pull-secret:
 
 kind-kindnet-up:
 	kind create cluster --name $(E2E_CLUSTER) --config deploy/e2e/kind-default.yaml
+	kubectl wait --for=condition=Ready nodes --all --timeout=300s
 
 kind-flannel-up:
 	kind create cluster --name $(E2E_CLUSTER) --config deploy/e2e/kind-no-cni.yaml
@@ -161,10 +164,13 @@ kind-cilium-up:
 kind-calico-up:
 	kind create cluster --name $(E2E_CLUSTER) --config deploy/e2e/kind-calico.yaml
 	@set -e; manifest=$$(mktemp); \
-	trap 'rm -f "$$manifest"' EXIT; \
+	patched="$$manifest.patched"; \
+	trap 'rm -f "$$manifest" "$$patched"' EXIT; \
 	curl -fsSL "https://raw.githubusercontent.com/projectcalico/calico/$(CALICO_VERSION)/manifests/calico.yaml" -o "$$manifest"; \
 	echo "$(CALICO_MANIFEST_SHA256)  $$manifest" | sha256sum -c -; \
-	kubectl apply -f "$$manifest"
+	sed '/name: CALICO_IPV4POOL_IPIP/{n;s/value: "Always"/value: "$(CALICO_IPIP_MODE)"/;}' "$$manifest" >"$$patched"; \
+	grep -A1 'name: CALICO_IPV4POOL_IPIP' "$$patched" | grep -q 'value: "$(CALICO_IPIP_MODE)"'; \
+	kubectl apply -f "$$patched"
 	kubectl -n kube-system rollout status daemonset/calico-node --timeout=300s
 	kubectl -n kube-system rollout status deployment/calico-kube-controllers --timeout=300s
 	kubectl wait --for=condition=Ready nodes --all --timeout=300s

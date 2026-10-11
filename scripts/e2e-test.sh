@@ -209,8 +209,6 @@ if [ "$(kubectl -n "$NAMESPACE" get pod "$FRONTEND" -o jsonpath='{.spec.nodeName
 fi
 
 TRACE_ARGS=(
-  trace pod "$NAMESPACE/$FRONTEND"
-  --to "service/$NAMESPACE/backend"
   --agent-image "$IMAGE"
   --agent-namespace "$AGENT_NAMESPACE"
   --no-tui
@@ -218,6 +216,10 @@ TRACE_ARGS=(
 if [ -n "$IMAGE_PULL_SECRET" ]; then
   TRACE_ARGS+=(--agent-image-pull-secret "$IMAGE_PULL_SECRET")
 fi
+
+service_trace_args() {
+  printf '%s\n' trace pod "$NAMESPACE/$FRONTEND" --to "service/$NAMESPACE/${1:-backend}"
+}
 
 wait_for_trace_context() {
   local file="$1"
@@ -236,12 +238,15 @@ wait_for_trace_context() {
 
 start_trace() {
   local name="$1"
+  local service="${2:-backend}"
   local output="$ARTIFACT_DIR/$name.ndjson"
   local errors="$ARTIFACT_DIR/$name.err"
+  local trace_command
+  mapfile -t trace_command < <(service_trace_args "$service")
   : >"$output"
   : >"$errors"
   timeout --signal=INT --kill-after=10s 90s \
-    ./bin/kubectl-datapath "${TRACE_ARGS[@]}" >"$output" 2>"$errors" &
+    ./bin/kubectl-datapath "${trace_command[@]}" "${TRACE_ARGS[@]}" >"$output" 2>"$errors" &
   TRACE_PID=$!
   wait_for_trace_context "$output"
 
@@ -273,7 +278,7 @@ stop_trace() {
 
 request_backend() {
   kubectl -n "$NAMESPACE" exec deployment/frontend -- \
-    wget -q -T 5 -O- "http://backend.$NAMESPACE.svc.cluster.local"
+    wget -q -T 5 -O- "http://${1:-backend}.$NAMESPACE.svc.cluster.local"
 }
 
 assert_jq() {
@@ -301,12 +306,53 @@ assert_jq "$BASELINE" \
 assert_jq "$BASELINE" \
   'all(.[]; (.lost // 0) == 0)' \
   "baseline trace reported event loss"
-if [ "$CNI" != "calico" ]; then
-  assert_jq "$BASELINE" \
-    'any(.[]; .kind == "transit" and .side == "transit-source") and
-     any(.[]; .kind == "transit" and .side == "transit-destination")' \
-    "baseline trace has no two-node transit evidence"
+assert_jq "$BASELINE" \
+  'any(.[]; .kind == "transit" and .side == "transit-source") and
+   any(.[]; .kind == "transit" and .side == "transit-destination")' \
+  "baseline trace has no two-node transit evidence"
+
+kubectl apply -f deploy/e2e/service-misconfig.yaml
+
+log "Service targetPort mismatch scenario"
+for _ in $(seq 1 30); do
+  [ -n "$(kubectl -n "$NAMESPACE" get endpointslice \
+    -l kubernetes.io/service-name=backend-wrong-port \
+    -o jsonpath='{.items[*].endpoints[*].addresses[0]}')" ] && break
+  sleep 1
+done
+start_trace wrong-port backend-wrong-port
+request_backend backend-wrong-port >/dev/null 2>&1 &&
+  fail "request to a Service with a wrong targetPort unexpectedly succeeded"
+sleep 3
+stop_trace
+WRONG_PORT="$ARTIFACT_DIR/wrong-port.ndjson"
+assert_jq "$WRONG_PORT" \
+  'any(.[]; .kind == "connect" and .side == "source" and .dst_port == 80)' \
+  "wrong-port trace has no application connect evidence"
+assert_jq "$WRONG_PORT" \
+  'any(.[]; .kind == "packet" and .side == "backend" and .protocol == 6 and .dst_port == 8081 and (((.tcp_flags / 2) | floor) % 2) == 1)' \
+  "wrong-port trace did not show the translated SYN at the backend boundary"
+assert_jq "$WRONG_PORT" \
+  'any(.[]; .kind == "packet" and .side == "backend" and .protocol == 6 and .src_port == 8081 and (((.tcp_flags / 4) | floor) % 2) == 1)' \
+  "wrong-port trace did not show the RST leaving the backend boundary"
+assert_jq "$WRONG_PORT" \
+  'all(.[]; (.lost // 0) == 0)' \
+  "wrong-port trace reported event loss"
+
+log "Service selector mismatch scenario"
+if request_backend backend-wrong-selector >/dev/null 2>&1; then
+  fail "request to a Service without backends unexpectedly succeeded"
 fi
+mapfile -t NO_BACKEND_TRACE < <(service_trace_args backend-wrong-selector)
+if ./bin/kubectl-datapath "${NO_BACKEND_TRACE[@]}" "${TRACE_ARGS[@]}" \
+  >"$ARTIFACT_DIR/wrong-selector.ndjson" 2>"$ARTIFACT_DIR/wrong-selector.err"; then
+  fail "trace of a Service without ready backends unexpectedly succeeded"
+fi
+grep -q 'has no ready EndpointSlice backends' "$ARTIFACT_DIR/wrong-selector.err" ||
+  fail "trace of a Service without backends did not report the missing backends"
+[ ! -s "$ARTIFACT_DIR/wrong-selector.ndjson" ] ||
+  fail "trace of a Service without backends emitted evidence"
+kubectl delete -f deploy/e2e/service-misconfig.yaml --ignore-not-found
 
 log "ingress policy scenario"
 kubectl apply -f deploy/e2e/deny-backend-ingress.yaml

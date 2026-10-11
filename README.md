@@ -304,6 +304,19 @@ enforce NetworkPolicy. Kindnet and Flannel detect enforcement from the
 controlled ingress scenario, then apply the same expectation to the live
 egress-policy refresh check.
 
+Besides the baseline and NetworkPolicy scenarios, every target checks two
+Service misconfigurations (`deploy/e2e/service-misconfig.yaml`):
+
+- **Wrong `targetPort`:** the trace shows the connect intent, the translated
+  SYN at the backend Pod boundary, and the backend's RST. Translation and
+  delivery to the Pod boundary worked; the failure is above the datapath.
+- **Selector matching no Pods:** the trace refuses to start because the Service
+  has no ready EndpointSlice backends, and emits no evidence.
+
+The Calico target patches the pinned manifest to IP-in-IP `CrossSubnet`
+(`CALICO_IPIP_MODE`), so same-subnet Kind nodes route natively and node
+transit is asserted. Calico's default `Always` IP-in-IP mode is not decoded.
+
 CI publishes immutable images such as
 `ghcr.io/srodi/kubectl-datapath:sha-<commit>`. For a private package, configure
 the pull secret in the agent namespace without putting credentials in a file:
