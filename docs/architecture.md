@@ -26,8 +26,6 @@ claims.
 
 ![System architecture](diagrams/system-architecture.svg)
 
-[Mermaid source](diagrams/system-architecture.mmd)
-
 ### Trust boundary
 
 The client owns Kubernetes credentials, resource resolution, metadata
@@ -40,11 +38,13 @@ Each agent Pod is:
 - mounted read-only to host procfs and cgroup v2;
 - created without a ServiceAccount token;
 - bounded by a 30-minute deadline;
-- deleted after their capture log stream ends, or when the client stops the trace.
+- deleted after their capture log stream ends, or when the client stops the
+  trace.
 
 The privilege is broad at the node boundary, so minimizing agent lifetime and
-count matters. Grouping by node reduces a typical cross-node Service trace from
-six privileged Pods to two without combining evidence identities.
+count matters. One agent per node, rather than one per attachment, keeps the
+number of privileged Pods equal to the number of involved nodes without
+combining evidence identities.
 
 This credential boundary is not a confinement boundary. A privileged,
 host-PID agent should be treated as having node-root-equivalent access even
@@ -54,8 +54,6 @@ though caller credentials and ServiceAccount tokens are absent. See
 ## Trace lifecycle
 
 ![Trace lifecycle](diagrams/trace-lifecycle.svg)
-
-[Mermaid source](diagrams/trace-lifecycle.mmd)
 
 All targets are known before agents start. A node agent receives a list of
 Pod-UID or route targets, opens one capture session for each, and multiplexes
@@ -83,8 +81,6 @@ The TUI map represents network namespaces and instrumented boundaries, not an
 idealized packet-delivery promise.
 
 ![Datapath observation model](diagrams/datapath-observation.svg)
-
-[Mermaid source](diagrams/datapath-observation.mmd)
 
 ### What each point proves
 
@@ -124,16 +120,12 @@ For a Service trace, the client correlates three address views:
 
 ![Service translation evidence](diagrams/service-translation.svg)
 
-[Mermaid source](diagrams/service-translation.mmd)
-
 A changed address localizes translation relative to observation points. It does
 not identify the specific kube-proxy or CNI program responsible.
 
 DNS is a prerequisite path, not background noise:
 
 ![DNS evidence path](diagrams/dns-path.svg)
-
-[Mermaid source](diagrams/dns-path.mmd)
 
 If a newer DNS query has no response, it becomes the primary focus and an older
 backend TCP attempt becomes historical only when the DNS and backend connect
@@ -204,35 +196,28 @@ The client validates sequence continuity per attachment. A gap not explained
 by ring-buffer loss is reported separately as log-transport loss.
 
 During shutdown, the agent detaches capture hooks, reads the final sequence and
-loss counters, then emits a terminal status for every attachment. The client
-stops agents on interruption while keeping the NDJSON delivery pipeline alive
-to drain their final counters before returning. The client
-checks that all expected attachments supplied a complete terminal status before
-accepting a natural end of the log stream. Missing or incomplete status is
-reported as incomplete evidence, including loss at the end of a trace where no
-later packet could expose a sequence gap. Agent cleanup and Pod deletion errors
-are returned to the caller rather than silently discarded.
+loss counters, and emits a terminal status for every attachment. On
+interruption the client stops the agents but keeps reading their logs to drain
+those final statuses. A natural end of the log stream is accepted only if every
+expected attachment supplied a complete terminal status; otherwise the trace is
+reported as incomplete, including tail loss that no later packet could expose.
 
-On natural completion (including the Pod's 30-minute deadline), the log reader
-validates final status and closes the log stream before deleting the agent Pod.
-Deletion does not wait for the user to exit the results view. Explicit client
-shutdown and automatic deletion share one cleanup operation; transient API or
-network errors get up to three attempts, each with a five-second timeout.
-Deletion uses the created Pod's UID to avoid deleting a replacement object.
-Persistent failures report the namespace/name of the Pod that may remain.
-Service metadata watchers stop after all capture streams finish, allowing the
-session to reach its finished state while retaining the in-memory results.
+Agent Pods are deleted once their log streams finish, without waiting for the
+user to leave the results view. Deletion uses the created Pod's UID so a
+replacement object is never removed, retries transient errors up to three times
+with a five-second timeout each, and reports the namespace and name of any Pod
+that may remain.
 
-These are client-driven cleanup guarantees, not server-side garbage collection.
-A killed client or sustained loss of API access can still leave terminal Pods
-behind. Standalone Pods have no Job-style TTL, and their active deadline only
-terminates execution.
+These are client-driven cleanup guarantees, not server-side garbage
+collection. A killed client or sustained loss of API access can leave Pods
+behind: standalone Pods have no TTL, and the active deadline only terminates
+execution.
 
 ## Capture implementation
 
 | Capture | Attachment | Filter |
 |---|---|---|
-| Pod packets | TCX, or classic TC fallback, on host-side veth ingress and egress | Selected Pod interface; client trace correlation |
+| Pod packets | TCX, or classic TC fallback, on the Pod's host-side peer interface, ingress and egress | Selected Pod interface; client trace correlation |
 | Application intent | BTF/fentry on `__sys_connect` | Selected source Pod cgroup IDs |
 | Native transit | TCX, or classic TC fallback, on route-selected interface | Both selected inner addresses |
 | VXLAN transit | TCX, or classic TC fallback, with UDP `8472` / `4789` decoding | Both selected inner addresses |
@@ -274,7 +259,6 @@ IP-in-IP, WireGuard, and IPsec are not decoded.
 | Versioned NDJSON | Replayable, testable, automation-friendly evidence | Schema changes require compatibility discipline |
 | Stop when Service backends change | Prevents stale attachments from being shown as current | Long-running traces must restart after rollouts or readiness changes |
 | Bounded backend instrumentation | Controls privileged attachment and BPF cost | Uninstrumented selected backends are shown as unavailable |
-| Mermaid in Markdown | Responsive, reviewable, and easy to update with code | Rendering depends on Mermaid support in the viewer |
 
 ### Why not share one BPF object per node?
 
@@ -296,9 +280,10 @@ with explicit lifetime.
 Unsupported capture paths must return compatibility evidence rather than
 silently changing semantics.
 
-The `capture.Strategy` interface allows future implementations, such as
-cgroup-v2 packet hooks, classic tc, Cilium netkit, or CNI-specific verdict
-adapters, without changing the observation schema or TUI model.
+The `capture.Strategy` interface allows other capture implementations, such as
+cgroup-v2 packet hooks or CNI-specific verdict adapters, without changing the
+observation schema or TUI model. TCX and classic TC are the current
+implementations.
 
 When adding a new observation point:
 

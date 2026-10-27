@@ -2,20 +2,13 @@
 
 `kubectl-datapath` shows **where Kubernetes traffic was observed and where
 matching evidence stopped**. It is an educational tool for exploring how
-Kubernetes traffic moves through application, Pod, Service, and node
-boundaries.
+traffic moves through application, Pod, Service, and node boundaries.
 
-![kubectl-datapath tracing cross-node traffic over VXLAN](docs/kubectl-datapath.gif)
+![kubectl datapath tracing cross-node traffic over VXLAN](docs/kubectl-datapath.gif)
 
 It starts short-lived, credential-free agents on the involved nodes, captures
-selected kernel evidence, and renders a live terminal view. It does not turn
-missing packets into unsupported delivery or drop verdicts.
-
-```text
-src Pod             source node          destination node       dst Pod
-  ● connect intent     ● pod boundary        ● underlay            × pod boundary
-                       └──── observed ────────┴──── evidence gap ────┘
-```
+selected kernel evidence with eBPF, and renders a live terminal view. It does
+not turn missing packets into delivery or drop verdicts.
 
 ## Why use it?
 
@@ -31,12 +24,11 @@ Use `kubectl-datapath` when you need to answer questions such as:
 
 ## How it works
 
-![kubectl-datapath architecture](docs/diagrams/overview.svg)
-
-[Mermaid source](docs/diagrams/overview.mmd)
+![kubectl-datapath architecture](docs/diagrams/system-architecture.svg)
 
 Agents are privileged because they attach eBPF programs on their node, but
-they receive no ServiceAccount token and are deleted when the trace ends.
+they receive no ServiceAccount token and are deleted when the trace ends. See
+[Architecture and design](docs/architecture.md) for details.
 
 ## Requirements
 
@@ -56,35 +48,27 @@ deletes them immediately when it exits.
 
 ## Quick start
 
-Build the current tree:
-
 ```sh
 make build
-```
-
-Inspect the current machine's local capture environment:
-
-```sh
-./bin/kubectl-datapath compatibility
-```
-
-This command does **not** inspect Kubernetes nodes. A trace reports node-agent
-startup or attachment failures directly.
-
-Trace from a Pod to a Service:
-
-```sh
 ./bin/kubectl-datapath trace pod default/frontend --to backend
 ```
 
-Trace to a specific Pod:
+When installed as a kubectl plugin, run `kubectl datapath` instead.
 
-```sh
-./bin/kubectl-datapath trace pod default/frontend \
-  --to pod/default/backend-abc
-```
+The agent image defaults to `ghcr.io/srodi/kubectl-datapath:dev`. For a local
+build, run `make docker-build` (tags `kubectl-datapath:e2e`), make the image
+available to your nodes (for Kind, `make kind-load`), and pass
+`--agent-image kubectl-datapath:e2e`.
 
-When installed as a kubectl plugin, use `kubectl datapath`.
+Other options:
+
+- `--no-tui` writes NDJSON to stdout. Redirect it to keep a recording, then
+  open it with `kubectl datapath replay events.ndjson`.
+- `--agent-namespace` selects the agent namespace (default `kube-system`).
+- `--max-backends` limits observed ready Service backends (default 4).
+- `kubectl datapath compatibility` checks only the local machine, not
+  Kubernetes nodes. A trace reports agent startup or attachment failures
+  directly.
 
 ### Destination syntax
 
@@ -118,24 +102,6 @@ This one targets a Service with a wrong `targetPort`: the SYN reaches the
 backend Pod and the Pod answers with a reset, reported as a refused connection.
 
 ![kubectl datapath tracing a Service with a wrong targetPort: the backend SYN is answered with a reset](docs/tui-service.png)
-
-The Service-trace layout below uses illustrative numbers.
-
-```text
-× GAP FOUND  VXLAN vni=1
-  connect          src Pod          src node         dst node         dst Pod
-  ●━━━━━━━━━━━━━━━━●━━━━━━━━━━━━━━━━●━━━━━━━━━━━━━━━━●┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈×
-  fentry           veth1a tcx       eth0 tcx         eth0 tcx         veth9f tcx
-                   seen 1,204       seen 98,311      seen 77,020      seen 3,911
-  intent seen      captured 12      captured 12      captured 12      captured 0
-  nodes: worker-a → worker-b
-
-  Evidence stops before dst Pod
-  Evidence gap: matching SYN crossed the source Pod boundary, but not the destination Pod boundary.
-
-  Attempts 1 · Pod packets 36 · Node packets 4 · Connects 1 · Rejected 0
-  Ring buffer 1 MiB/agent · events lost 0 · log stream lost 0
-```
 
 Interface kinds are shown in the details (`d`): for example `netkit (L3)`
 rather than `veth`. Older recordings without link metadata use the neutral
@@ -218,10 +184,9 @@ not a network drop, and zero ring-buffer loss does not prove full visibility.
 Old recordings show counters as unavailable, not zero.
 
 The ready backend set is a trace-start snapshot. If EndpointSlices change
-during a trace, the trace stops and asks you to restart rather than presenting
-stale coverage. `--max-backends` limits attachments; if traffic selects a ready
-backend beyond that limit, its boundary is shown as unavailable, not as missing
-evidence.
+during a trace, the trace stops and asks you to restart. `--max-backends`
+limits attachments; a ready backend beyond that limit is shown as unavailable,
+not as missing evidence.
 
 ## Evidence rules
 
@@ -233,23 +198,22 @@ evidence.
 - Newer unresolved DNS activity supersedes an older backend attempt only when
   its `connect()` intent comes from the same source cgroup. DNS qnames are not
   captured, so the UI states that limitation; older evidence remains history.
-- Event loss changes missing evidence to incomplete evidence.
-- Per-attachment sequence gaps distinguish log-transport loss from BPF
-  ring-buffer loss.
+- Event loss changes missing evidence to incomplete evidence. Sequence gaps
+  distinguish log-transport loss from ring-buffer loss.
 - On shutdown, every attachment reports its final sequence and ring-buffer
-  loss counters. Missing or incomplete final status makes the trace incomplete;
-  a clean watermark closes the evidence window without turning a gap into a
-  drop verdict.
-- Agent Pods are deleted after their log streams finish and final counters
-  are drained, even if the TUI remains open for inspecting results. Service
-  metadata watchers stop when all capture agents finish. Transient deletion
-  failures are retried; persistent failures identify the Pod that may remain.
-  Cleanup still requires a live client with API access: the 30-minute Pod
-  deadline stops capture but is not a deletion TTL. Deleted Pod logs are no
-  longer available through `kubectl logs`; use `--no-tui` and redirect output
-  to a file to retain a replayable NDJSON recording.
+  loss counters. Missing or incomplete final status makes the trace incomplete.
 - Unsupported encapsulation is reported as unavailable or missing evidence,
   never guessed.
+
+## Agent cleanup
+
+- The client deletes agent Pods after their log streams finish and final
+  counters are drained, even if the TUI stays open. Transient deletion failures
+  are retried; a persistent failure names the Pod that may remain.
+- Cleanup needs a live client with API access. The 30-minute Pod deadline stops
+  capture but does not delete the Pod.
+- Deleted Pod logs are gone. Use `--no-tui` and redirect output to a file to
+  keep a replayable NDJSON recording.
 
 ## Current scope
 
@@ -283,129 +247,12 @@ reports that limitation rather than inventing a path.
   missing final status, but lost events cannot be recovered.
 - Agents run with `privileged`, `hostPID`, and `hostNetwork`, and tolerate all
   taints. See [Security and threat model](docs/security.md).
+- Dual-stack Pods are traced by their primary `status.podIPs` address;
+  selecting a secondary address is not supported.
 
-### Netkit validation
+## More documentation
 
-On an existing netkit-cni cluster with its Python HTTP test workloads
-(`netkit-test/same-a`, `same-b`, and `cross-b`), build and load the updated
-agent image on every involved node, then run:
-
-```sh
-E2E_IMAGE=kubectl-datapath:e2e make e2e-netkit
-```
-
-This checks same-node and cross-node requests, both hook directions at each
-Pod boundary, native transit, detected L3 netkit and `nk-vrf` table 100,
-complete final diagnostic counters, and replay metadata. It does not install
-a CNI or replace workloads. Override `E2E_NETKIT_NAMESPACE`,
-`E2E_NETKIT_SOURCE`, `E2E_NETKIT_SAME_NODE`, `E2E_NETKIT_CROSS_NODE`, and
-`E2E_NETKIT_PORT` for equivalent workloads. `E2E_ARTIFACT_DIR` selects the
-recording directory.
-
-On Linux with BPF privileges, also run
-`sudo env DATAPATH_BPF_TEST=1 go test ./internal/capture/tcx -run TestPacketDiagnosticsBPF`
-to exercise parser rejection, filtering, successful emission, ring-buffer
-exhaustion, and unchanged forwarding verdicts without attaching to interfaces.
-
-For dual-stack Pods, the current trace identity and transit plan use the
-primary `status.podIPs` address. IPv4 and IPv6 single-stack paths are supported;
-selecting a secondary dual-stack address is not yet supported.
-
-## Development
-
-The generated BPF objects are checked in, so `make build` works on supported
-Go development hosts, including macOS. Regenerate them through the pinned
-Linux toolchain container on either macOS or Linux:
-
-```sh
-make generate
-make check
-make build
-```
-
-The portable generator requires Docker with support for running `linux/arm64`
-images. Docker Desktop provides this on macOS; Linux hosts may need QEMU
-binfmt support. The image pins the Clang 19.1.7 environment used for the
-checked-in objects.
-
-### End-to-end testing
-
-The same runner is used locally and in CI. Each target creates a disposable
-three-node Kind cluster, builds and loads the agent image, deploys a cross-node
-frontend/backend workload, and checks allowed traffic plus ingress- and
-egress-policy scenarios.
-
-```sh
-make e2e-kindnet
-make e2e-flannel
-make e2e-cilium
-make e2e-calico
-```
-
-`make e2e-all` starts all four targets in parallel. Cilium and Calico must
-enforce NetworkPolicy. Kindnet and Flannel detect enforcement from the
-controlled ingress scenario, then apply the same expectation to the live
-egress-policy refresh check.
-
-Besides the baseline and NetworkPolicy scenarios, every target checks two
-Service misconfigurations (`deploy/e2e/service-misconfig.yaml`):
-
-- **Wrong `targetPort`:** the trace shows the connect intent, the translated
-  SYN at the backend Pod boundary, and the backend's RST. Translation and
-  delivery to the Pod boundary worked; the failure is above the datapath.
-- **Selector matching no Pods:** the trace refuses to start because the Service
-  has no ready EndpointSlice backends, and emits no evidence.
-
-The Calico target patches the pinned manifest to IP-in-IP `CrossSubnet`
-(`CALICO_IPIP_MODE`), so same-subnet Kind nodes route natively and node
-transit is asserted. Calico's default `Always` IP-in-IP mode is not decoded.
-
-CI publishes immutable images such as
-`ghcr.io/srodi/kubectl-datapath:sha-<commit>`. For a private package, configure
-the pull secret in the agent namespace without putting credentials in a file:
-
-```sh
-GHCR_USERNAME=... GHCR_TOKEN=... make image-pull-secret
-```
-
-Release binaries default to the matching immutable semver agent image. The
-`version` command prints both values. Tag workflows publish Linux/macOS
-binaries, checksums, multi-architecture agent images, and a rendered
-`datapath.yaml` Krew manifest as release assets only after unit and E2E jobs
-pass.
-
-Test the complete Krew packaging and installation flow locally without
-publishing:
-
-```sh
-make krew-local-install
-kubectl datapath --help
-make krew-local-reinstall # rebuild and replace after code changes
-make krew-local-uninstall
-```
-
-The install target builds GoReleaser snapshot archives, renders a checksum-
-matched manifest, installs the archive for the current OS and architecture,
-and runs `kubectl datapath version`. Installation refuses to reuse an existing
-plugin so stale binaries cannot pass the smoke test; use the reinstall target
-after code changes.
-
-Architecture diagrams are generated from the version-controlled Mermaid files:
-
-```sh
-make architecture-diagrams
-make check-architecture-diagrams
-```
-
-Commit both the `.mmd` source and generated `.svg`. CI rejects stale SVGs.
-
-The documentation uses GitHub-flavored Markdown and generated SVG diagrams.
-Mermaid sources remain versioned beside the SVGs so diagram changes stay easy
-to review without requiring a documentation site.
-
-For component boundaries, capture semantics, and design tradeoffs, see
-[Architecture and design](docs/architecture.md).
-
-Before granting access to privileged agents, review the
-[security and threat model](docs/security.md) and the
-[security reporting policy](SECURITY.md).
+- [Architecture and design](docs/architecture.md)
+- [Security and threat model](docs/security.md) and the
+  [reporting policy](SECURITY.md)
+- [Development, testing, and releases](docs/development.md)
