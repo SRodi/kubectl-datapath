@@ -104,8 +104,9 @@ The primary view is one strip of capture points, left to right along the
 packet path: the `connect()` intent probe (Service traces), the source Pod,
 the source and destination node underlay (cross-node traces only), and the
 destination Pod. Under each point are its interface, hook, and two counters:
-`seen` (every packet the hook saw) and `captured` (events emitted for the
-selected traffic). `seen` shows a hook is alive even when nothing matched.
+`seen` (every packet the hook saw) and `captured` (packets sent to the ring
+buffer: decoded and passing the Pod address filter, not necessarily the traced
+flow). `seen` shows a hook is alive even when nothing matched.
 
 ```text
 × GAP FOUND  VXLAN vni=1
@@ -148,7 +149,7 @@ configuration context, not proof that a specific rule dropped the packet.
 | Pod packets | Matching packet events at the Pod-facing hooks |
 | Node packets | Matching events at the node underlay hooks (cross-node traces) |
 | Connects | `connect()` intents from the `fentry/__sys_connect` probe |
-| Rejected | Packets a hook could not decode, summed over hooks; not a packet drop |
+| Rejected | Packets a hook could not decode (for example ARP), summed over hooks, so one packet seen at two hooks counts twice; not a packet drop |
 | events lost | Events the kernel could not place in the full 1 MiB ring buffer |
 | log stream lost | Events that left the kernel but never reached the CLI |
 
