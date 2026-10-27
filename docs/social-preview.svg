@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img" aria-labelledby="title desc">
+  <title id="title">kubectl-datapath</title>
+  <desc id="desc">Shows where Kubernetes traffic was observed and where matching evidence stopped.</desc>
+  <rect width="1280" height="640" fill="#0d1117"/>
+  <rect x="0" y="0" width="1280" height="8" fill="#2dd4bf"/>
+
+  <g transform="translate(96 72) scale(0.5)">
+    <rect width="256" height="256" rx="56" fill="#161b22" stroke="#30363d" stroke-width="4"/>
+    <g transform="translate(128 128) scale(1.2) translate(-120 -128)">
+      <g fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="10">
+        <path d="M62 128H116" stroke="#2dd4bf"/>
+        <path d="M142 128H164" stroke="#94a3b8" stroke-dasharray="1 16"/>
+        <path d="M178 112L202 144M202 112L178 144" stroke="#f59e0b"/>
+      </g>
+      <circle cx="56" cy="128" r="18" fill="#2dd4bf"/>
+      <circle cx="124" cy="128" r="18" fill="#2dd4bf"/>
+      <circle cx="56" cy="128" r="7" fill="#161b22"/>
+      <circle cx="124" cy="128" r="7" fill="#161b22"/>
+    </g>
+  </g>
+
+  <text x="256" y="132" fill="#f0f6fc" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="64" font-weight="700">kubectl-datapath</text>
+  <text x="96" y="268" fill="#f0f6fc" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="48" font-weight="600">Where was Kubernetes traffic observed,</text>
+  <text x="96" y="328" fill="#f0f6fc" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="48" font-weight="600">and where did the evidence stop?</text>
+  <text x="96" y="386" fill="#8b949e" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="28">Credential-free eBPF tracing of the Pod, Service and node datapath.</text>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="22" text-anchor="middle">
+    <path d="M160 500H880" stroke="#2dd4bf" stroke-width="6" stroke-linecap="round"/>
+    <path d="M880 500H1040" stroke="#94a3b8" stroke-width="6" stroke-linecap="round" stroke-dasharray="2 16"/>
+    <circle cx="160" cy="500" r="18" fill="#2dd4bf"/>
+    <circle cx="400" cy="500" r="18" fill="#2dd4bf"/>
+    <circle cx="640" cy="500" r="18" fill="#2dd4bf"/>
+    <circle cx="880" cy="500" r="18" fill="#2dd4bf"/>
+    <path d="M1060 476L1100 524M1100 476L1060 524" stroke="#f59e0b" stroke-width="8" stroke-linecap="round"/>
+    <circle cx="160" cy="500" r="7" fill="#0d1117"/>
+    <circle cx="400" cy="500" r="7" fill="#0d1117"/>
+    <circle cx="640" cy="500" r="7" fill="#0d1117"/>
+    <circle cx="880" cy="500" r="7" fill="#0d1117"/>
+    <text x="160" y="560" fill="#8b949e">connect()</text>
+    <text x="400" y="560" fill="#8b949e">src pod</text>
+    <text x="640" y="560" fill="#8b949e">src node</text>
+    <text x="880" y="560" fill="#8b949e">dst node</text>
+    <text x="1080" y="560" fill="#f59e0b">no evidence</text>
+  </g>
+</svg>

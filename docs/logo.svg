@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-labelledby="title desc">
+  <title id="title">kubectl-datapath logo</title>
+  <desc id="desc">Two observation points joined by a line; the next link is dashed and ends in a cross marking where evidence stops.</desc>
+  <rect width="256" height="256" rx="56" fill="#0d1117"/>
+  <g transform="translate(128 128) scale(1.2) translate(-120 -128)"><g fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="10">
+    <path d="M62 128H116" stroke="#2dd4bf"/>
+    <path d="M142 128H164" stroke="#94a3b8" stroke-dasharray="1 16"/>
+    <path d="M178 112L202 144M202 112L178 144" stroke="#f59e0b"/>
+  </g>
+  <g>
+    <circle cx="56" cy="128" r="18" fill="#2dd4bf"/>
+    <circle cx="124" cy="128" r="18" fill="#2dd4bf"/>
+    <circle cx="56" cy="128" r="7" fill="#0d1117"/>
+    <circle cx="124" cy="128" r="7" fill="#0d1117"/>
+  </g>
+  </g>
+</svg>
