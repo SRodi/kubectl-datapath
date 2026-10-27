@@ -152,7 +152,6 @@ func (c *Client) StartAgent(ctx context.Context, options AgentOptions, index *en
 			select {
 			case observations <- observation:
 			case <-streamCtx.Done():
-				break
 			}
 			if streamCtx.Err() != nil {
 				break

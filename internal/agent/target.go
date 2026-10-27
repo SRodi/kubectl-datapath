@@ -71,14 +71,6 @@ func NewTargetResolver(procRoot, cgroupRoot string, podUIDs []string) (*TargetRe
 	}, nil
 }
 
-func TargetForPodUID(procRoot, cgroupRoot, podUID string) (Target, error) {
-	resolver, err := NewTargetResolver(procRoot, cgroupRoot, []string{podUID})
-	if err != nil {
-		return Target{}, err
-	}
-	return resolver.TargetForPodUID(podUID)
-}
-
 func (r *TargetResolver) TargetForPodUID(podUID string) (Target, error) {
 	if target, ok := r.targets[podUID]; ok {
 		return target, nil

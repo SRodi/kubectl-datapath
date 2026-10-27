@@ -72,3 +72,9 @@ func TestObservationFromRawDecodesNativeICMPTransit(t *testing.T) {
 		t.Fatalf("observation = %#v", observation)
 	}
 }
+
+func observationFromRaw(target capture.Target, raw bpfEvent, wallOffset int64) model.Observation {
+	return observationFromRawWithHook(
+		target, raw, wallOffset, "pod-boundary/tcx", "node-transit/tcx", "TCX hook",
+	)
+}

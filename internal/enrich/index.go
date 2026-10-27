@@ -71,12 +71,6 @@ func BuildNamespaces(ctx context.Context, client kubernetes.Interface, namespace
 	return index, warnings
 }
 
-func (i *Index) Add(address netip.Addr, label string) {
-	if address.IsValid() {
-		i.endpoints[address] = model.Endpoint{Kind: model.EndpointIP, Name: label, Address: address}
-	}
-}
-
 func (i *Index) AddEndpoint(endpoint model.Endpoint) {
 	if endpoint.Address.IsValid() {
 		i.endpoints[endpoint.Address] = endpoint

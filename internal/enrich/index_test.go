@@ -15,7 +15,7 @@ import (
 func TestApplyOnlyUsesExactAddressMatches(t *testing.T) {
 	index := New()
 	address := netip.MustParseAddr("10.0.0.2")
-	index.Add(address, "pod=default/backend")
+	index.AddEndpoint(model.Endpoint{Kind: model.EndpointIP, Name: "pod=default/backend", Address: address})
 	observation := index.Apply(model.Observation{DstAddr: address})
 	if observation.DstLabel != "pod=default/backend" {
 		t.Fatalf("label = %q", observation.DstLabel)

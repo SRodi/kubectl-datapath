@@ -632,19 +632,6 @@ func dereferencePoint(point *traceview.EvidencePoint) traceview.EvidencePoint {
 	return *point
 }
 
-func captureMarker(point traceview.EvidencePoint) string {
-	switch point.State {
-	case "OBSERVED":
-		return exactStyle.Render("●")
-	case "NO EVIDENCE":
-		return warnStyle.Render("×")
-	case "INCOMPLETE":
-		return warnStyle.Render("!")
-	default:
-		return subtleStyle.Render("○")
-	}
-}
-
 func renderAttempts(
 	builder *strings.Builder,
 	attempts []traceview.AttemptSummary,

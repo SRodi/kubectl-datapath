@@ -345,12 +345,6 @@ func (s *session) reportLoss(ctx context.Context, done <-chan struct{}) error {
 	}
 }
 
-func observationFromRaw(target capture.Target, raw bpfEvent, wallOffset int64) model.Observation {
-	return observationFromRawWithHook(
-		target, raw, wallOffset, "pod-boundary/tcx", "node-transit/tcx", "TCX hook",
-	)
-}
-
 func observationFromRawWithHook(
 	target capture.Target,
 	raw bpfEvent,
