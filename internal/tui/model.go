@@ -315,6 +315,9 @@ func (m Model) renderContent() string {
 		if summary.detail != "" {
 			builder.WriteString(indent(subtleStyle.Render(wrap(summary.detail, m.width-4))) + "\n")
 		}
+		if serviceTrace && len(attempts) > 0 && attempts[0].Reset {
+			builder.WriteString("  " + gapStyle.Render("Backend answered the SYN with a reset: connection refused, check the Service targetPort.") + "\n")
+		}
 		builder.WriteString("\n")
 	}
 
@@ -658,7 +661,10 @@ func renderAttempts(
 	}
 	current := attempts[0]
 	style := warnStyle
-	if current.ResponseObserved {
+	switch {
+	case current.Reset:
+		style = gapStyle
+	case current.ResponseObserved:
 		style = exactStyle
 	}
 	fmt.Fprintf(builder, "  %s  client :%-5d  %s\n\n",
@@ -673,7 +679,10 @@ func renderAttempts(
 	limit := min(len(attempts), 6)
 	for _, previous := range attempts[1:limit] {
 		statusStyle := subtleStyle
-		if !previous.ResponseObserved {
+		switch {
+		case previous.Reset:
+			statusStyle = gapStyle
+		case !previous.ResponseObserved:
 			statusStyle = warnStyle
 		}
 		fmt.Fprintf(builder, "  %s  client :%-5d  %s\n",

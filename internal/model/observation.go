@@ -239,6 +239,11 @@ func ProtocolName(protocol uint8) string {
 	}
 }
 
+// IsTCPReset reports whether the packet is a TCP segment with RST set.
+func (o Observation) IsTCPReset() bool {
+	return o.Protocol == 6 && o.TCPFlags&0x04 != 0
+}
+
 func TCPFlagsName(flags uint8) string {
 	var names []string
 	if flags&0x01 != 0 {

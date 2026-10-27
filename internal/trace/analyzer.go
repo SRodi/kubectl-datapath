@@ -113,6 +113,7 @@ type AttemptSummary struct {
 	SYNs             int
 	BackendObserved  bool
 	ResponseObserved bool
+	Reset            bool
 	Active           bool
 	Status           string
 }
@@ -460,9 +461,12 @@ func (a *Analyzer) Attempts() []AttemptSummary {
 			SYNs:             len(current.sourceSYNs),
 			BackendObserved:  current.backendSYN != nil,
 			ResponseObserved: current.response != nil,
+			Reset:            current.response != nil && current.response.IsTCPReset(),
 			Active:           current == a.active,
 		}
 		switch {
+		case summary.BackendObserved && summary.Reset:
+			summary.Status = "backend SYN and reset observed (connection refused)"
 		case summary.BackendObserved && summary.ResponseObserved:
 			summary.Status = "backend SYN and response observed"
 		case summary.BackendObserved:

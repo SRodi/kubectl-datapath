@@ -102,7 +102,7 @@ func (t *Tracker) Observe(observation model.Observation) {
 		observation.Direction != current.FirstDirection {
 		current.ObservedB++
 	}
-	if observation.Protocol == 6 && observation.TCPFlags&0x04 != 0 {
+	if observation.IsTCPReset() {
 		current.Status = StatusReset
 	} else if current.ObservedB > 0 {
 		current.Status = StatusResponse
