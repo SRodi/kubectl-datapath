@@ -108,6 +108,11 @@ destination Pod. Under each point are its interface, hook, and two counters:
 buffer: decoded and passing the Pod address filter, not necessarily the traced
 flow). `seen` shows a hook is alive even when nothing matched.
 
+![kubectl datapath showing GAP FOUND: evidence reaches the destination node but stops before the destination Pod](docs/tui-gap.png)
+
+Real output from a cross-node trace on Cilium (VXLAN) with a deny-all ingress
+policy on the backend. The Service-trace layout below uses illustrative numbers.
+
 ```text
 × GAP FOUND  VXLAN vni=1
   connect          src Pod          src node         dst node         dst Pod
