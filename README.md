@@ -111,7 +111,15 @@ flow). `seen` shows a hook is alive even when nothing matched.
 ![kubectl datapath showing GAP FOUND: evidence reaches the destination node but stops before the destination Pod](docs/tui-gap.png)
 
 Real output from a cross-node trace on Cilium (VXLAN) with a deny-all ingress
-policy on the backend. The Service-trace layout below uses illustrative numbers.
+policy on the backend.
+
+A Service trace adds the `connect()` intent point and per-attempt evidence.
+This one targets a Service with a wrong `targetPort`: the SYN reaches the
+backend Pod and the Pod answers with a reset, reported as a refused connection.
+
+![kubectl datapath tracing a Service with a wrong targetPort: the backend SYN is answered with a reset](docs/tui-service.png)
+
+The Service-trace layout below uses illustrative numbers.
 
 ```text
 × GAP FOUND  VXLAN vni=1
