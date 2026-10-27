@@ -315,7 +315,7 @@ func (m Model) renderContent() string {
 		if summary.detail != "" {
 			builder.WriteString(indent(subtleStyle.Render(wrap(summary.detail, m.width-4))) + "\n")
 		}
-		if serviceTrace && len(attempts) > 0 && attempts[0].Reset {
+		if serviceTrace && len(attempts) > 0 && attempts[0].Reset && attempts[0].BackendObserved {
 			builder.WriteString("  " + gapStyle.Render("Backend answered the SYN with a reset: connection refused, check the Service targetPort.") + "\n")
 		}
 		builder.WriteString("\n")

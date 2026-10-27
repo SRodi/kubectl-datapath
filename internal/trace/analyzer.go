@@ -469,6 +469,8 @@ func (a *Analyzer) Attempts() []AttemptSummary {
 			summary.Status = "backend SYN and reset observed (connection refused)"
 		case summary.BackendObserved && summary.ResponseObserved:
 			summary.Status = "backend SYN and response observed"
+		case summary.Reset:
+			summary.Status = "reset observed; no backend SYN observed"
 		case summary.BackendObserved:
 			summary.Status = "backend SYN observed; no response observed"
 		case summary.SYNs > 1:

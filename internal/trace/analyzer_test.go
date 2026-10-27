@@ -797,3 +797,26 @@ func TestAnalyzerReportsResetAsRefusedAttempt(t *testing.T) {
 		t.Fatalf("attempts = %#v", attempts)
 	}
 }
+
+func TestAnalyzerDoesNotAttributeResetWithoutBackendSYN(t *testing.T) {
+	analyzer := NewAnalyzer()
+	context := testContext()
+	now := time.Now()
+	analyzer.Observe(model.Observation{Kind: model.KindTraceContext, Trace: &context})
+	analyzer.Observe(model.Observation{
+		Kind: model.KindPacket, Side: "source", WallTime: now,
+		Protocol: 6, SrcAddr: context.Source.Address, DstAddr: context.Frontends[0].Address,
+		SrcPort: 40000, DstPort: 80, TCPFlags: 0x02, TCPSequence: 100,
+	})
+	analyzer.Observe(model.Observation{
+		Kind: model.KindPacket, Side: "source", WallTime: now.Add(time.Millisecond),
+		Protocol: 6, SrcAddr: context.Backends[0].Address, DstAddr: context.Source.Address,
+		SrcPort: 8080, DstPort: 40000, TCPFlags: 0x14, TCPAck: 101,
+	})
+
+	attempts := analyzer.Attempts()
+	if len(attempts) != 1 || attempts[0].BackendObserved || !attempts[0].Reset ||
+		attempts[0].Status != "reset observed; no backend SYN observed" {
+		t.Fatalf("attempts = %#v", attempts)
+	}
+}
