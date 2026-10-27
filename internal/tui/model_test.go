@@ -22,14 +22,15 @@ func TestNetkitLabelsDiagnosticsAndPacketDirections(t *testing.T) {
 		}},
 	}
 	var builder strings.Builder
-	renderDatapath(&builder, traceview.DatapathView{
+	datapath := traceview.DatapathView{
 		SourceInterface: attachment, DestinationInterface: attachment,
 		SourceBoundary: traceview.EvidencePoint{State: "OBSERVED"},
-	}, 0)
+	}
+	builder.WriteString(renderStrip(buildStrip(datapath, []model.Observation{attachment}, 0, false), 0))
 	renderCaptureDetails(&builder, []model.Observation{attachment})
 	output := builder.String()
 	for _, expected := range []string{
-		"source netkit (L3)", "to destination Pod (netkit (L3))", "nkh-test ifindex=14",
+		"nkh-test", "seen 7", "captured 3", "nkh-test ifindex=14 · netkit (L3)",
 		"master=nk-vrf vrf-table=100", "tcx/ingress seen=7 parse-rejected=2 filtered=1 emitted=3 lost=1",
 	} {
 		if !strings.Contains(output, expected) {
@@ -217,11 +218,11 @@ func TestDatapathVisualizationMarksMissingBackendEvidence(t *testing.T) {
 	}
 	view := current.(Model).View()
 	for _, expected := range []string{
-		"Datapath evidence",
-		"● source pod-facing interface",
-		"× to destination Pod",
-		"× connect intent",
-		"shared host network namespace",
+		"× GAP FOUND",
+		"Evidence stops before dst Pod",
+		"veth-source",
+		"no intent seen",
+		"node: worker-a",
 		"Detailed path, health, and transit evidence hidden",
 		"NetworkPolicy demo/deny-all-backend",
 		"destination ingress deny-all",
@@ -307,7 +308,8 @@ func TestDatapathVisualizationShowsObservedBackendDespiteCoverageMetadata(t *tes
 		current, _ = current.Update(observationMsg{observation: event})
 	}
 	view := current.(Model).View()
-	if !strings.Contains(view, "● to destination Pod") ||
+	if !strings.Contains(view, "● OBSERVED") ||
+		!strings.Contains(view, "Observed through dst Pod") ||
 		!strings.Contains(view, "Matching SYN observed through the destination Pod boundary.") ||
 		!strings.Contains(view, "showing 1-8 of 8 observations") ||
 		strings.Count(view, "PSH-ACK") != 4 {
@@ -400,8 +402,8 @@ func TestDatapathVisualizationPrioritizesNewerBlockedDNS(t *testing.T) {
 	for _, expected := range []string{
 		"Latest focus: DNS prerequisite",
 		"newer unresolved DNS query",
-		"● source pod-facing interface",
-		"transit: [srcHostNetNS] ──×──",
+		"veth-source",
+		"Evidence stops before src node",
 		"gap is inside the source node",
 		"Latest backend attempt · historical",
 		"Newer unresolved DNS evidence supersedes this backend attempt",
@@ -798,15 +800,11 @@ func TestViewShowsVXLANNodeTransitSeparately(t *testing.T) {
 	current, _ = current.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
 	view := current.(Model).View()
 	for _, expected := range []string{
-		"Datapath evidence",
-		"srcNode: worker-a",
-		"[srcPodNetNS: client.demo]",
-		"source pod-facing interface",
-		"transit: [srcHostNetNS]",
-		"VXLAN vni=1",
-		"[dstHostNetNS]",
-		"to destination Pod",
-		"[dstPodNetNS: server.demo]",
+		"× GAP FOUND  VXLAN vni=1",
+		"nodes: worker-a → worker-b",
+		"src node",
+		"dst node",
+		"Evidence stops before dst Pod",
 		"● observed",
 		"Node transit", "worker-a/eth0", "worker-b/eth0",
 		"source node worker-a · monotonic order",
@@ -829,7 +827,7 @@ func TestViewShowsVXLANNodeTransitSeparately(t *testing.T) {
 	}
 	current, _ = current.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
 	top := current.(Model).View()
-	if !strings.Contains(top, "Datapath evidence") || !strings.Contains(top, "lines 1-9 of") {
+	if !strings.Contains(top, "GAP FOUND") || !strings.Contains(top, "lines 1-9 of") {
 		t.Fatalf("top of the whole view is not reachable:\n%s", top)
 	}
 	foundTraceEvidence := false
@@ -875,14 +873,15 @@ func TestStatusCountsAllEvidenceAndAttachmentLoss(t *testing.T) {
 		m = updated.(Model)
 	}
 	view := m.View()
-	if !strings.Contains(view, "Boundary 1  Transit 1  Connect 1  Lost 6  Transport 3") {
+	if !strings.Contains(view, "Pod packets 1 · Node packets 1 · Connects 1 · Rejected 0") ||
+		!strings.Contains(view, "events lost 6 · log stream lost 3") {
 		t.Fatalf("evidence counters are inaccurate:\n%s", view)
 	}
 	if !strings.Contains(view, "Final capture watermarks: 0 complete, 1 incomplete") {
 		t.Fatalf("final capture completeness is not visible:\n%s", view)
 	}
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
-	if compact := updated.(Model).renderContent(); !strings.Contains(compact, "F1 B1 T1 C1 L6 X3") {
-		t.Fatalf("narrow layout did not use compact counters:\n%s", compact)
+	if narrow := updated.(Model).renderContent(); !strings.Contains(narrow, "events lost 6 · log stream lost 3") {
+		t.Fatalf("narrow layout dropped loss counters:\n%s", narrow)
 	}
 }

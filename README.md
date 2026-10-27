@@ -100,36 +100,60 @@ path question instead of mixing unrelated node traffic.
 
 ## Reading the TUI
 
-The primary view is the selected network-namespace path:
-
-This example uses veth interfaces. Live labels use the detected link kind:
-for example, `netkit (L3)` rather than `veth`. Older recordings without link
-metadata use the neutral label `pod-facing interface`. Pod-to-Pod traces
-focus on `selected pod traffic`, not a backend TCP attempt.
+The primary view is one strip of capture points, left to right along the
+packet path: the `connect()` intent probe (Service traces), the source Pod,
+the source and destination node underlay (cross-node traces only), and the
+destination Pod. Under each point are its interface, hook, and two counters:
+`seen` (every packet the hook saw) and `captured` (events emitted for the
+selected traffic). `seen` shows a hook is alive even when nothing matched.
 
 ```text
-Datapath evidence
-  Latest focus: backend TCP attempt
-  srcNode: worker-a
-    [srcPodNetNS: frontend.default]
-       ● connect intent: backend.default
-       └──● source veth──> [srcHostNetNS]
-  transit: [srcHostNetNS] ──●── VXLAN ──●──> [dstHostNetNS]
-  dstNode: worker-b
-    [dstHostNetNS] ──× to destination Pod──> [dstPodNetNS: backend.default]
+× GAP FOUND  VXLAN vni=1
+  connect          src Pod          src node         dst node         dst Pod
+  ●━━━━━━━━━━━━━━━━●━━━━━━━━━━━━━━━━●━━━━━━━━━━━━━━━━●┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈×
+  fentry           veth1a tcx       eth0 tcx         eth0 tcx         veth9f tcx
+                   seen 1,204       seen 98,311      seen 77,020      seen 3,911
+  intent seen      captured 12      captured 12      captured 12      captured 0
+  nodes: worker-a → worker-b
+
+  Evidence stops before dst Pod
+  Evidence gap: matching SYN crossed the source Pod boundary, but not the destination Pod boundary.
+
+  Attempts 1 · Pod packets 36 · Node packets 4 · Connects 1 · Rejected 0
+  Ring buffer 1 MiB/agent · events lost 0 · log stream lost 0
 ```
+
+Interface kinds are shown in the details (`d`): for example `netkit (L3)`
+rather than `veth`. Older recordings without link metadata use the neutral
+label `pod-facing interface`. Terminals narrower than about 100 columns use a
+vertical strip.
 
 | Marker | Meaning |
 |---|---|
 | `●` | Matching evidence was observed |
-| `×` | Capture is ready, but no matching evidence was observed |
+| `◇` | Hook is attached; no matching traffic has been seen yet |
+| `×` | Hook is attached and traffic was judged, but no matching evidence was observed |
 | `!` | Event loss makes the point incomplete |
 | `○` | Capture is not ready or unavailable |
 
-An `×` is **not automatically a drop verdict**. The diagnosis localizes the
-narrowest gap between adjacent observation points. Relevant NetworkPolicies
-are displayed as configuration context, not proof that a specific rule dropped
-the packet.
+The badge summarizes the strip: `WAITING`, `OBSERVED`, `GAP FOUND`,
+`INCOMPLETE`, or `COMPLETE` once the stream ends. A `×` is **not
+automatically a drop verdict**. The diagnosis localizes the narrowest gap
+between adjacent observation points. Relevant NetworkPolicies are displayed as
+configuration context, not proof that a specific rule dropped the packet.
+
+| Counter | Meaning |
+|---|---|
+| Flows / Attempts | Distinct flows (5-tuple, both directions), or TCP attempts for Service traces |
+| Pod packets | Matching packet events at the Pod-facing hooks |
+| Node packets | Matching events at the node underlay hooks (cross-node traces) |
+| Connects | `connect()` intents from the `fentry/__sys_connect` probe |
+| Rejected | Packets a hook could not decode, summed over hooks; not a packet drop |
+| events lost | Events the kernel could not place in the full 1 MiB ring buffer |
+| log stream lost | Events that left the kernel but never reached the CLI |
+
+Either loss figure above zero means later "not observed" results cannot be
+trusted.
 
 ### Navigation
 
@@ -138,12 +162,8 @@ the packet.
 | `j` / `k`, arrows | Scroll the complete view |
 | Page Up / Page Down | Scroll by page |
 | `g` / `G` | First / last line |
-| `d` | Toggle detailed path, attachment health, and transit evidence |
+| `d` | Toggle marker legend, attachment health, per-hook counters, and transit evidence |
 | `q` | Quit |
-
-On narrow terminals, the summary counters are compact: `F` / `A` means flows /
-attempts, `B` boundary packets, `T` transit packets, `C` connect intents, `L`
-ring-buffer loss, and `X` log-transport loss.
 
 ## What is observed
 

@@ -281,39 +281,48 @@ func (m Model) renderContent() string {
 	for _, current := range m.transportLost {
 		transportLost += current
 	}
-	status := "observing"
-	if m.err != nil {
-		status = "incomplete"
-	} else if m.closed {
-		status = "complete"
-	}
-	statusStyle := subtleStyle
-	if m.err != nil {
-		statusStyle = warnStyle
-	}
-	if m.width > 0 && m.width < 110 {
-		if serviceTrace {
-			fmt.Fprintf(&builder, "%s  A%d B%d T%d C%d L%d X%d\n\n",
-				statusStyle.Render(status), len(attempts),
-				m.evidenceCounts[model.KindPacket], m.evidenceCounts[model.KindTransit],
-				m.evidenceCounts[model.KindConnect], lost, transportLost)
-		} else {
-			fmt.Fprintf(&builder, "%s  F%d B%d T%d C%d L%d X%d\n\n",
-				statusStyle.Render(status), len(flows),
-				m.evidenceCounts[model.KindPacket], m.evidenceCounts[model.KindTransit],
-				m.evidenceCounts[model.KindConnect], lost, transportLost)
-		}
-	} else if serviceTrace {
-		fmt.Fprintf(&builder, "%s  Attempts %d  Boundary %d  Transit %d  Connect %d  Lost %d  Transport %d\n\n",
-			statusStyle.Render("Status "+status), len(attempts),
-			m.evidenceCounts[model.KindPacket], m.evidenceCounts[model.KindTransit],
-			m.evidenceCounts[model.KindConnect], lost, transportLost)
+	datapath := m.trace.Datapath()
+	attachments := m.trace.Attachments()
+	var points []stripPoint
+	var summary stripSummary
+	if datapath != nil {
+		points = buildStrip(*datapath, attachments, m.evidenceCounts[model.KindPacket], m.closed)
+		summary = summarize(points, *datapath, m.err != nil, m.closed)
 	} else {
-		fmt.Fprintf(&builder, "%s  Flows %d  Boundary %d  Transit %d  Connect %d  Lost %d  Transport %d\n\n",
-			statusStyle.Render("Status "+status), len(flows),
-			m.evidenceCounts[model.KindPacket], m.evidenceCounts[model.KindTransit],
-			m.evidenceCounts[model.KindConnect], lost, transportLost)
+		summary = stripSummary{badge: "OBSERVING", glyph: "◇", style: idleStyle}
+		if m.err != nil {
+			summary = stripSummary{badge: "INCOMPLETE", glyph: "!", style: warnStyle}
+		} else if m.closed {
+			summary = stripSummary{badge: "COMPLETE", glyph: "●", style: exactStyle}
+		}
 	}
+	badge := summary.style.Bold(true).Render(summary.glyph + " " + summary.badge)
+	if datapath != nil && datapath.TransitLabel != "" && datapath.TransitLabel != "node underlay" && datapath.CrossNode {
+		badge += subtleStyle.Render("  " + datapath.TransitLabel)
+	}
+	builder.WriteString(badge + "\n\n")
+
+	if datapath != nil {
+		if datapath.Focus != "" && datapath.Focus != "selected pod traffic" {
+			fmt.Fprintf(&builder, "  %s\n", subtleStyle.Render("Latest focus: "+datapath.Focus))
+			if datapath.FocusDetail != "" {
+				builder.WriteString("  " + subtleStyle.Render(datapath.FocusDetail) + "\n")
+			}
+		}
+		builder.WriteString(renderStrip(points, m.width) + "\n")
+		builder.WriteString("  " + subtleStyle.Render(nodesLine(*datapath)) + "\n\n")
+		builder.WriteString("  " + summary.style.Bold(true).Render(summary.headline) + "\n")
+		if summary.detail != "" {
+			builder.WriteString(indent(subtleStyle.Render(wrap(summary.detail, m.width-4))) + "\n")
+		}
+		builder.WriteString("\n")
+	}
+
+	for _, line := range m.totalsLines(len(flows), len(attempts), serviceTrace, lost, transportLost, attachments) {
+		builder.WriteString("  " + line + "\n")
+	}
+	builder.WriteString("\n")
+
 	if len(m.finalStatuses) > 0 {
 		var complete, incomplete int
 		for _, status := range m.finalStatuses {
@@ -330,14 +339,13 @@ func (m Model) renderContent() string {
 		fmt.Fprintf(&builder, "%s\n\n",
 			finalStyle.Render(fmt.Sprintf("Final capture watermarks: %d complete, %d incomplete", complete, incomplete)))
 	}
-
-	datapath := m.trace.Datapath()
 	if datapath != nil {
-		renderDatapath(&builder, *datapath, m.width)
+		renderPolicies(&builder, datapath.Policies)
 	}
 
 	stages := m.trace.Stages()
 	if len(stages) > 0 && m.showDetails {
+		builder.WriteString("  " + subtleStyle.Render(stripLegend()) + "\n\n")
 		builder.WriteString(headerStyle.Render(m.trace.ScopeTitle()) + "\n")
 		for _, stage := range stages {
 			fmt.Fprintf(&builder, "  %-22s %s\n", stage.Name, endpointLine(stage.Endpoint))
@@ -428,85 +436,66 @@ func (m Model) renderContent() string {
 	return strings.TrimSuffix(builder.String(), "\n")
 }
 
-func renderDatapath(builder *strings.Builder, datapath traceview.DatapathView, width int) {
-	builder.WriteString(headerStyle.Render("Datapath evidence") + "\n")
-	if datapath.Focus != "" {
-		fmt.Fprintf(builder, "  Latest focus: %s\n", datapath.Focus)
-		if datapath.FocusDetail != "" {
-			builder.WriteString("                " + subtleStyle.Render(datapath.FocusDetail) + "\n")
-		}
+func nodesLine(datapath traceview.DatapathView) string {
+	source := datapath.SourceNode
+	if source == "" {
+		source = "unknown node"
 	}
-	sourceNode := datapath.SourceNode
-	if sourceNode == "" {
-		sourceNode = "unknown node"
-	}
-	destinationNode := datapath.DestinationNode
-	if destinationNode == "" {
-		destinationNode = "unresolved backend node"
-	}
-	nodeWidth := 32
-	podWidth := 30
-	if width > 0 {
-		nodeWidth = max(16, min(nodeWidth, width-18))
-		podWidth = max(12, min(podWidth, width-38))
-	}
-	sourceNode = truncate(sourceNode, nodeWidth)
-	destinationNode = truncate(destinationNode, nodeWidth)
-	fmt.Fprintf(builder, "  srcNode: %s\n", sourceNode)
-	fmt.Fprintf(builder, "    [srcPodNetNS: %s]\n", truncate(datapath.Source.DisplayName(), podWidth))
-	if datapath.Connect != nil {
-		fmt.Fprintf(builder, "       %s %s: %s\n",
-			captureMarker(*datapath.Connect), datapath.ConnectKind, truncate(datapath.ConnectLabel, 36))
-	}
-	sourceHost := "srcHostNetNS"
-	destinationHost := "dstHostNetNS"
 	if !datapath.CrossNode {
-		sourceHost = "hostNetNS"
-		destinationHost = "hostNetNS"
+		return "node: " + source
 	}
-	fmt.Fprintf(builder, "       └──%s source %s──> [%s]\n",
-		captureMarker(datapath.SourceBoundary), datapath.SourceInterface.InterfaceDescription(), sourceHost)
-	if datapath.CrossNode {
-		fmt.Fprintf(builder, "  transit: [srcHostNetNS] ──%s── %s ──%s──> [dstHostNetNS]\n",
-			captureMarker(dereferencePoint(datapath.SourceTransit)),
-			datapath.TransitLabel,
-			captureMarker(dereferencePoint(datapath.DestinationTransit)),
-		)
-	} else {
-		builder.WriteString("  host: shared host network namespace\n")
+	destination := datapath.DestinationNode
+	if destination == "" {
+		destination = "unresolved backend node"
 	}
-	fmt.Fprintf(builder, "  dstNode: %s\n", destinationNode)
-	fmt.Fprintf(builder, "    [%s] ──%s to destination Pod (%s)──> [dstPodNetNS: %s]\n",
-		destinationHost,
-		captureMarker(datapath.DestinationBoundary),
-		datapath.DestinationInterface.InterfaceDescription(),
-		truncate(datapath.Destination.DisplayName(), podWidth),
-	)
-	builder.WriteString("  " + subtleStyle.Render("● observed  × attached, no matching evidence  ! incomplete  ○ not ready/unavailable") + "\n\n")
-	diagnosisStyle := exactStyle
-	if strings.Contains(datapath.Diagnosis, "gap") ||
-		strings.Contains(datapath.Diagnosis, "incomplete") ||
-		strings.Contains(datapath.Diagnosis, "no matching evidence") {
-		diagnosisStyle = warnStyle
-	}
-	builder.WriteString(headerStyle.Render("Diagnosis") + "\n")
-	diagnosis := datapath.Diagnosis
-	if width > 0 {
-		diagnosis = truncate(diagnosis, max(16, width-4))
-	}
-	builder.WriteString("  " + diagnosisStyle.Render(diagnosis) + "\n\n")
-	if len(datapath.Policies) > 0 {
-		builder.WriteString(headerStyle.Render("Relevant configuration") + "\n")
-		for _, policy := range datapath.Policies {
-			mode := policy.Scope
-			if policy.DenyAll {
-				mode += " deny-all"
-			}
-			fmt.Fprintf(builder, "  NetworkPolicy %s/%s · %s · selects %s\n",
-				policy.Namespace, policy.Name, mode, strings.Join(policy.Pods, ", "))
+	return "nodes: " + source + " → " + destination
+}
+
+func (m Model) totalsLines(
+	flows, attempts int,
+	serviceTrace bool,
+	lost, transportLost uint64,
+	attachments []model.Observation,
+) []string {
+	var rejected uint64
+	for _, attachment := range attachments {
+		for _, counters := range attachment.Diagnostics {
+			rejected += counters.ParseRejected
 		}
-		builder.WriteString("  " + subtleStyle.Render("Configuration context only; this is not a packet-drop verdict.") + "\n\n")
 	}
+	label, count := "Flows", flows
+	if serviceTrace {
+		label, count = "Attempts", attempts
+	}
+	totals := fmt.Sprintf("%s %d · Pod packets %d · Node packets %d · Connects %d · Rejected %d",
+		label, count, m.evidenceCounts[model.KindPacket], m.evidenceCounts[model.KindTransit],
+		m.evidenceCounts[model.KindConnect], rejected)
+	eventsLost := subtleStyle.Render(fmt.Sprintf("events lost %d", lost))
+	if lost > 0 {
+		eventsLost = warnStyle.Render(fmt.Sprintf("events lost %d", lost))
+	}
+	streamLost := subtleStyle.Render(fmt.Sprintf("log stream lost %d", transportLost))
+	if transportLost > 0 {
+		streamLost = warnStyle.Render(fmt.Sprintf("log stream lost %d", transportLost))
+	}
+	ring := subtleStyle.Render(fmt.Sprintf("Ring buffer %d MiB/agent · ", ringBufferBytes>>20))
+	return []string{subtleStyle.Render(totals), ring + eventsLost + subtleStyle.Render(" · ") + streamLost}
+}
+
+func renderPolicies(builder *strings.Builder, policies []model.PolicyContext) {
+	if len(policies) == 0 {
+		return
+	}
+	builder.WriteString(headerStyle.Render("Relevant configuration") + "\n")
+	for _, policy := range policies {
+		mode := policy.Scope
+		if policy.DenyAll {
+			mode += " deny-all"
+		}
+		fmt.Fprintf(builder, "  NetworkPolicy %s/%s · %s · selects %s\n",
+			policy.Namespace, policy.Name, mode, strings.Join(policy.Pods, ", "))
+	}
+	builder.WriteString("  " + subtleStyle.Render("Configuration context only; this is not a packet-drop verdict.") + "\n\n")
 }
 
 func renderCaptureDetails(builder *strings.Builder, attachments []model.Observation) {
