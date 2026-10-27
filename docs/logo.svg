@@ -1,15 +1,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-labelledby="title desc">
   <title id="title">kubectl-datapath logo</title>
-  <desc id="desc">Two observed points joined by a line; the next link is dotted and ends in a hollow point marked with a cross where matching evidence stops.</desc>
+  <desc id="desc">Two observed points joined by a line; an amber dashed link continues to a cross where matching evidence stops.</desc>
   <rect width="256" height="256" rx="56" fill="#0d1117"/>
   <g transform="translate(128 128) scale(1.2) translate(-120 -128)" fill="none" stroke-linecap="round" stroke-linejoin="round">
     <path d="M50 128H120" stroke="#00d787" stroke-width="10"/>
-    <path d="M146 128H168" stroke="#8b949e" stroke-width="6" stroke-dasharray="0.1 9"/>
+    <path d="M140 128H176" stroke="#ffaf00" stroke-width="5" stroke-linecap="butt" stroke-dasharray="12 6"/>
     <circle cx="50" cy="128" r="16" fill="#00d787"/>
     <circle cx="120" cy="128" r="16" fill="#00d787"/>
     <circle cx="50" cy="128" r="6" fill="#0d1117"/>
     <circle cx="120" cy="128" r="6" fill="#0d1117"/>
-    <circle cx="190" cy="128" r="16" fill="#0d1117" stroke="#ffaf00" stroke-width="6"/>
-    <path d="M184 122L196 134M196 122L184 134" stroke="#ffaf00" stroke-width="5"/>
+    <path d="M182 118L202 138M202 118L182 138" stroke="#ffaf00" stroke-width="7"/>
   </g>
 </svg>
