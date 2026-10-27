@@ -264,7 +264,7 @@ func (m Model) View() string {
 
 func (m Model) renderContent() string {
 	var builder strings.Builder
-	screenTitle := "kubectl-datapath · " + m.title
+	screenTitle := "kubectl datapath · " + m.title
 	if m.width > 0 {
 		screenTitle = truncate(screenTitle, m.width)
 	}
