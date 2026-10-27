@@ -16,6 +16,8 @@ The local client:
 Each agent Pod:
 
 - runs as root with `privileged: true`, `hostPID: true`, and `hostNetwork: true`;
+- tolerates every taint (`operator: Exists`), so it can be scheduled onto any
+  selected node, including control-plane and dedicated nodes;
 - mounts host procfs and cgroup v2 read-only;
 - attaches eBPF programs to host interfaces and kernel functions;
 - receives no ServiceAccount token;
@@ -32,6 +34,11 @@ Keeping Kubernetes credentials out of agents prevents an agent from directly
 using the caller's API permissions. It does not confine the agent. A privileged
 host-PID process can inspect node processes and can potentially access host and
 workload data outside the explicit read-only mounts.
+
+The agent uses full `privileged` mode rather than a reduced capability set.
+Whether a narrower set (for example `BPF`, `NET_ADMIN`, and `PERFMON`) is
+sufficient across kernels and runtimes has not been validated, so the tool does
+not claim it. Treat every agent as having node-root-equivalent access.
 
 ## Protected assets
 

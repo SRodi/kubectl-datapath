@@ -275,6 +275,15 @@ Not decoded today:
 Encrypted or unsupported underlays may hide the inner transit tuple. The tool
 reports that limitation rather than inventing a path.
 
+### Known limitations
+
+- Observations travel from the agent to the CLI through Pod logs. Log
+  rotation, truncation, or throughput limits can drop events. Sequence gaps
+  and final per-attachment watermarks are reported as `log stream lost` or
+  missing final status, but lost events cannot be recovered.
+- Agents run with `privileged`, `hostPID`, and `hostNetwork`, and tolerate all
+  taints. See [Security and threat model](docs/security.md).
+
 ### Netkit validation
 
 On an existing netkit-cni cluster with its Python HTTP test workloads

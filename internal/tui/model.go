@@ -389,8 +389,11 @@ func (m Model) renderContent() string {
 				break
 			}
 			statusStyle := exactStyle
-			if current.Status == flow.StatusIncomplete {
+			switch current.Status {
+			case flow.StatusIncomplete:
 				statusStyle = warnStyle
+			case flow.StatusRetransmit, flow.StatusReset:
+				statusStyle = relatedStyle
 			}
 			name := current.Key.String()
 			if current.SourceEndpoint != nil || current.DestEndpoint != nil {

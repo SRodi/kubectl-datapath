@@ -7,12 +7,11 @@ import (
 
 func TestAgentPodHasUniqueCredentialFreeLifecycle(t *testing.T) {
 	pod := AgentPod(AgentOptions{
-		Namespace:      "kube-system",
-		Image:          "example.invalid/agent@sha256:abc",
-		Node:           "worker-a",
-		PodUID:         "uid",
-		SessionID:      "session",
-		CaptureConnect: true,
+		Namespace: "kube-system",
+		Image:     "example.invalid/agent@sha256:abc",
+		Node:      "worker-a",
+		SessionID: "session",
+		Targets:   []AgentTarget{{PodUID: "uid", AttachmentID: "source", Side: "source", CaptureConnect: true}},
 	})
 	if pod.GenerateName == "" || pod.Name != "" {
 		t.Fatal("agent Pod must use generateName")
@@ -29,32 +28,11 @@ func TestAgentPodHasUniqueCredentialFreeLifecycle(t *testing.T) {
 		t.Fatal("agent must be the container main process")
 	}
 	args := pod.Spec.Containers[0].Args
-	if !contains(args, "--capture-connect") {
-		t.Fatal("source trace agent must enable connect capture")
+	if !contains(args, "--target-json") {
+		t.Fatal("agent must receive its targets as JSON")
 	}
 	if len(pod.Spec.Volumes) != 2 || len(pod.Spec.Containers[0].VolumeMounts) != 2 {
 		t.Fatal("agent must mount host procfs and cgroup v2 read-only")
-	}
-}
-
-func TestAgentPodConfiguresRouteSelectedTransitCapture(t *testing.T) {
-	pod := AgentPod(AgentOptions{
-		Namespace: "kube-system", Image: "agent:dev", Node: "worker-a",
-		SessionID: "session", AttachmentID: "transit-source-worker-b", Side: "transit-source",
-		RouteTo: "192.0.2.20", FlowAddresses: []string{"10.244.0.5", "10.244.1.8"},
-	})
-	args := pod.Spec.Containers[0].Args
-	for _, expected := range []string{
-		"--route-to", "192.0.2.20",
-		"--flow-address", "10.244.0.5",
-		"--flow-address", "10.244.1.8",
-	} {
-		if !contains(args, expected) {
-			t.Fatalf("%q missing from agent args: %#v", expected, args)
-		}
-	}
-	if contains(args, "--pod-uid") {
-		t.Fatalf("transit agent must not resolve a Pod veth: %#v", args)
 	}
 }
 
@@ -91,9 +69,6 @@ func TestAgentPodConfiguresMultipleNodeTargets(t *testing.T) {
 		if decoded.AttachmentID != targets[index].AttachmentID {
 			t.Fatalf("target %d = %#v", index, decoded)
 		}
-	}
-	if contains(args, "--pod-uid") || contains(args, "--route-to") {
-		t.Fatalf("multi-target configuration must use only target JSON: %#v", args)
 	}
 }
 

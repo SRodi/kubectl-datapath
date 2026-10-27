@@ -23,13 +23,7 @@ type AgentOptions struct {
 	ImagePullSecret string
 	Node            string
 	Targets         []AgentTarget
-	PodUID          string
 	SessionID       string
-	AttachmentID    string
-	Side            string
-	CaptureConnect  bool
-	RouteTo         string
-	FlowAddresses   []string
 }
 
 func AgentPod(options AgentOptions) *corev1.Pod {
@@ -44,31 +38,12 @@ func AgentPod(options AgentOptions) *corev1.Pod {
 		"--session-id", options.SessionID,
 		"--node", options.Node,
 	}
-	if len(options.Targets) > 0 {
-		for _, target := range options.Targets {
-			encoded, err := json.Marshal(target)
-			if err != nil {
-				panic(err)
-			}
-			args = append(args, "--target-json", string(encoded))
+	for _, target := range options.Targets {
+		encoded, err := json.Marshal(target)
+		if err != nil {
+			panic(err)
 		}
-	} else {
-		args = append(args,
-			"--attachment-id", options.AttachmentID,
-			"--side", options.Side,
-		)
-		if options.PodUID != "" {
-			args = append(args, "--pod-uid", options.PodUID)
-		}
-		if options.RouteTo != "" {
-			args = append(args, "--route-to", options.RouteTo)
-			for _, address := range options.FlowAddresses {
-				args = append(args, "--flow-address", address)
-			}
-		}
-		if options.CaptureConnect {
-			args = append(args, "--capture-connect")
-		}
+		args = append(args, "--target-json", string(encoded))
 	}
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{

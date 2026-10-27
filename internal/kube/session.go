@@ -208,8 +208,8 @@ func (c *Client) StartAgent(ctx context.Context, options AgentOptions, index *en
 	return &AgentStream{
 		Observations: observations,
 		Errors:       streamErrors,
-		AttachmentID: options.AttachmentID,
-		Side:         options.Side,
+		AttachmentID: "node-" + options.Node,
+		Side:         "node",
 		close:        cleanup,
 		Done:         done,
 		cancel:       cancelStream,
@@ -254,9 +254,6 @@ func expectedAttachmentSides(options AgentOptions) map[string]string {
 		if target.AttachmentID != "" {
 			sides[target.AttachmentID] = target.Side
 		}
-	}
-	if len(sides) == 0 && options.AttachmentID != "" {
-		sides[options.AttachmentID] = options.Side
 	}
 	return sides
 }

@@ -6,7 +6,6 @@ import (
 	"net/netip"
 	"testing"
 
-	"github.com/SRodi/kubectl-datapath/internal/kube"
 	"github.com/SRodi/kubectl-datapath/internal/model"
 )
 
@@ -95,35 +94,16 @@ func TestMergeCaptureSessionsAttributesErrors(t *testing.T) {
 	}
 }
 
-func TestBuildTargetPropagatesPodFlowAddresses(t *testing.T) {
-	target, err := resolveAgentTarget(
-		kube.AgentTarget{
-			AttachmentID: "source",
-			Side:         "source",
-			FlowAddresses: []string{
-				"10.244.0.10",
-				"10.244.1.20",
-			},
-		},
-		"eth0",
-		[]uint64{42},
-		"session",
-		"worker-a",
-		nil,
-	)
+func TestParseFlowAddresses(t *testing.T) {
+	got, err := parseFlowAddresses([]string{"10.244.0.10", "10.244.1.20"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []netip.Addr{
-		netip.MustParseAddr("10.244.0.10"),
-		netip.MustParseAddr("10.244.1.20"),
+	want := []netip.Addr{netip.MustParseAddr("10.244.0.10"), netip.MustParseAddr("10.244.1.20")}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("flow addresses = %#v", got)
 	}
-	if len(target.FlowAddresses) != len(want) {
-		t.Fatalf("flow addresses = %#v", target.FlowAddresses)
-	}
-	for index := range want {
-		if target.FlowAddresses[index] != want[index] {
-			t.Fatalf("flow address %d = %s, want %s", index, target.FlowAddresses[index], want[index])
-		}
+	if _, err := parseFlowAddresses([]string{"not-an-ip"}); err == nil {
+		t.Fatal("invalid flow address must fail")
 	}
 }

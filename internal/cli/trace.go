@@ -516,8 +516,6 @@ func startNodeAgents(
 			Node:            node,
 			SessionID:       sessionID,
 			Targets:         plans[node],
-			AttachmentID:    "node-" + node,
-			Side:            "node",
 		}, index)
 		if err != nil {
 			return nil, errors.Join(
