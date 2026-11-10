@@ -4,7 +4,17 @@ on:
   push:
     branches: ["**"]
     tags: ["v*"]
+    paths-ignore:
+      - "**/*.md"
+      - "LICENSE"
+      - "docs/*.png"
+      - "docs/*.gif"
   pull_request:
+    paths-ignore:
+      - "**/*.md"
+      - "LICENSE"
+      - "docs/*.png"
+      - "docs/*.gif"
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -72,7 +82,7 @@ jobs:
 
   publish-image:
     name: Publish agent image
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))
     needs: [unit, e2e]
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -134,3 +144,7 @@ jobs:
         run: |
           ./scripts/render-krew-manifest.sh "$GITHUB_REF_NAME" dist/checksums.txt dist/datapath.yaml
           gh release upload "$GITHUB_REF_NAME" dist/datapath.yaml --clobber
+      - name: Open Krew index PR
+        uses: rajatjindal/krew-release-bot@c970b8a8f6dbc2f2285a26e3ae160903b87002c3 # v0.0.51
+        with:
+          krew_template_file: dist/datapath.yaml

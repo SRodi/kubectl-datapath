@@ -82,7 +82,11 @@ Release binaries default to the matching immutable semver agent image; the
 `version` command prints both values. Tag workflows publish Linux and macOS
 binaries, checksums, multi-architecture agent images, and a rendered
 `datapath.yaml` Krew manifest as release assets, only after the unit and E2E
-jobs pass.
+jobs pass. The same job then opens a pull request against
+`kubernetes-sigs/krew-index` with the rendered manifest
+([krew-release-bot](https://github.com/rajatjindal/krew-release-bot)), so
+tagging `vX.Y.Z` is the only manual release step. CI skips changes that touch
+only Markdown, `LICENSE`, or `docs` images.
 
 ## Krew packaging
 
