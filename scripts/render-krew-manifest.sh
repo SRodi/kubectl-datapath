@@ -35,10 +35,16 @@ metadata:
 spec:
   version: "$tag"
   homepage: https://github.com/SRodi/kubectl-datapath
-  shortDescription: Observe packet evidence in the Kubernetes datapath
+  shortDescription: Observe evidence along a selected network path
   description: |
     Launches short-lived node agents and presents packet observations,
     attribution confidence, compatibility, and event loss in a terminal UI.
+  caveats: |
+    Requires Linux Kubernetes nodes with BTF and cgroup v2. The short-lived
+    agents run as privileged Pods with hostNetwork and hostPID, and require
+    permission to create Pods, read their logs, and delete them.
+
+    Multus secondary interfaces and Windows nodes are not supported.
   platforms:
     - selector:
         matchLabels: {os: linux, arch: amd64}

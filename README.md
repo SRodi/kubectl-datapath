@@ -46,14 +46,29 @@ they receive no ServiceAccount token and are deleted when the trace ends. See
 Agents expire after 30 minutes if the client disappears. A normal trace
 deletes them immediately when it exits.
 
+## Install
+
+With [Krew](https://krew.sigs.k8s.io/):
+
+```sh
+kubectl krew install datapath
+kubectl datapath trace pod default/frontend --to backend
+```
+
+Release binaries for Linux and macOS (amd64, arm64) are also attached to each
+[GitHub release](https://github.com/SRodi/kubectl-datapath/releases).
+
 ## Quick start
+
+From a source checkout:
 
 ```sh
 make build
 ./bin/kubectl-datapath trace pod default/frontend --to backend
 ```
 
-When installed as a kubectl plugin, run `kubectl datapath` instead.
+The examples below use `./bin/kubectl-datapath`; when installed as a plugin, run
+`kubectl datapath` instead.
 
 The agent image defaults to `ghcr.io/srodi/kubectl-datapath:dev`. For a local
 build, run `make docker-build` (tags `kubectl-datapath:e2e`), make the image
